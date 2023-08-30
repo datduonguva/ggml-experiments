@@ -3,45 +3,14 @@
 #include <fstream>
 #include <string>
 #include <vector>
-
+#include "utils.cpp"
 using namespace std;
 
-void read_csv(string file_name, vector<int> &labels, vector<vector<int>> &pixels){
-    fstream input_file;
-    input_file.open(file_name, ios::in);
 
-
-    if (input_file.is_open()){
-	cout << "The file is open" << endl;
-        string sa;
-    
-	while(getline(input_file, sa)){
-	    
-	    int start_index = 0;
-		
-	    int label;
-	    vector<int> pixel; 
-	    vector<int> sep_position {0};
-
-	    // get positions of the commas
-	    for(int i=0; i<sa.length(); i++)
-		if (sa[i] == ',') sep_position.push_back(i);
-	    sep_position.push_back(sa.length());
-
-	    //
-	    label = stoi(sa.substr(sep_position[0], sep_position[1] - sep_position[0]));
-
-	    for (int i = 1; i < sep_position.size() - 1; i++){
-		// the number start as comma's position + 1
-		pixel.push_back(stoi(sa.substr(sep_position[i] + 1, sep_position[i+1] - sep_position[i])));
-	    }
-		// the number start as comma's position + 1
-
-	    labels.push_back(label);
-	    pixels.push_back(pixel);
-	}
-    }
-}
+void get_image_label(int id, vector<int>*labels, vector<vector<int>>* images, int &label, vector<int>& image){
+    label = labels->at(id);
+    image = images->at(id);
+} 
 
 int main(){
     // define the memory
@@ -95,28 +64,46 @@ int main(){
 	x
     );
 
-    cout << x->ne[0] <<", " << x->ne[1] << endl;
     x = ggml_add(ctx0,
 	x,
 	ggml_repeat(ctx0, layer2_b, x)
     );
-    x = ggml
 
-    cout << x->ne[0] <<", " << x->ne[1] << endl;
+    // Randomize the weight:
+    randomize_tensor(layer1_w, 2, layer1_w->ne);
+    randomize_tensor(layer1_b, 2, layer1_b->ne);
+    randomize_tensor(layer2_w, 2, layer2_w->ne);
+    randomize_tensor(layer2_b, 2, layer2_b->ne);
 
-    
+
+    // Read the training images and their labels;
+    vector<int> labels;
+    vector<vector<int>> images;
+    read_csv("mnist_test.csv", labels, images); 
+    cout << "size: " << labels.size() << ", " << images.size() << endl;
 
 
-    // Load the training data
-    if (0){
-	vector<int> labels;
-	vector<vector<int>> pixels;
-	read_csv("mnist_test.csv", labels, pixels); 
 
-	// build the model of 2 DNN of 3 DNN layers
-
-	cout << "Label size: " << labels.size() << endl;
-	cout << "Pixel size: " << pixels.size() << endl;
+    vector<int> mask;
+    for (int i = 0; i < labels.size(); i++){
+	mask.push_back(i);
     }
+
+    for (int i = 0; i < 100; i++){
+	cout << mask[i] << ", ";
+    }
+
+    cout << endl;
+
+    for (int epoch = 0; epoch < 1; epoch++){
+	// Minibatch implementation
+	shuffle(mask);
+	for (int step=0; step < 100; step += batch_size){
+	    cout << "step: " << step << endl;
+	    vector<int> batch_id (mask.begin() + step, mask.begin() + step + batch_size);
+	    // TODO: I am right here
+	}
+    }
+    
     return 0;
 }
