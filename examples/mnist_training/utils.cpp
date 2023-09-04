@@ -58,7 +58,7 @@ void randomize_tensor(
     } else if (ndims == 2){
 	for (int i1 = 0; i1 < ne[1]; i1++){
 	    for (int i0 = 0; i0 < ne[0]; i0++){
-		((float*) tensor ->data)[i1*ne[0] + i0] = frand();
+		((float*) tensor ->data)[i0*ne[1] +i1] = frand() - 0.5f;
 	    }
 	}
     }
