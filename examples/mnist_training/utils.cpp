@@ -31,9 +31,10 @@ void read_csv(string file_name, vector<int> &labels, vector<vector<int>> &pixels
 	    //
 	    label = stoi(sa.substr(sep_position[0], sep_position[1] - sep_position[0]));
 
+
 	    for (int i = 1; i < sep_position.size() - 1; i++){
 		// the number start as comma's position + 1
-		pixel.push_back(stoi(sa.substr(sep_position[i] + 1, sep_position[i+1] - sep_position[i])));
+		    pixel.push_back(stoi(sa.substr(sep_position[i] + 1, sep_position[i+1] - sep_position[i])));
 	    }
 		// the number start as comma's position + 1
 
