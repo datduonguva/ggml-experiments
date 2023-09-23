@@ -16,13 +16,14 @@ void get_mini_batch(
 ){
     int batch_size = input->ne[1]; 
     int image_size = images[0].size();
+    int n_class = target->ne[0];
     for (int i = 0; i < batch_size; i++){
         // one-hot encode the target
-        ggml_set_f32_1d(target, labels[batch_id[i]]*batch_size + i, 10.0);
+        ggml_set_f32_1d(target, i*n_class + labels[batch_id[i]], 1.0);
 
         // set the images 
         for (int j = 0; j < image_size; j++){
-            ggml_set_f32_1d(input, j*batch_size + i, (float) images[batch_id[i]][j]/128.0f - 1.0f); 
+            ggml_set_f32_1d(input, i*image_size + j, (float) images[batch_id[i]][j]/128.0f - 1.0f); 
         }
     }
 }
@@ -58,7 +59,7 @@ struct ggml_tensor * cross_entropy_loss(struct ggml_context * ctx, struct ggml_t
             ggml_neg(ctx,
                 ggml_sum_rows(ctx,
                     ggml_mul(ctx,
-                        ggml_soft_max(ctx, a),
+			a,
                         ggml_log(ctx,
                             ggml_add1(ctx,
                                 ggml_soft_max(ctx, b),
@@ -132,6 +133,7 @@ struct mlp create_mlp(int n_class){
 
 
 struct ggml_tensor * forward(struct mlp * model, struct ggml_context *ctx0, struct ggml_tensor *input){
+    // (28*28, 1024) matmul (28*28, batch)
     struct ggml_tensor * x = ggml_mul_mat(ctx0, model->layer1_w, input);
     x = ggml_add(ctx0,
     x,
@@ -207,13 +209,13 @@ int main(){
 
 
     int batch_size = 128;
-    for (int epoch = 0; epoch < 10; epoch++){
+    for (int epoch = 0; epoch < 4; epoch++){
         // Minibatch implementation
         shuffle(mask);
 
         for (int step=0; step < mask.size(); step += batch_size){
             cout << "Epoch: " <<  epoch << " ";
-            cout << "step: " << step << " ";
+            cout << "step: " << step/batch_size << " ";
             vector<int> batch_id (mask.begin() + step, mask.begin() + step + batch_size);
  
             // get a batch of training data
@@ -246,9 +248,8 @@ int main(){
             struct ggml_opt_params opt_params = ggml_opt_default_params(GGML_OPT_ADAM);
             opt_params.print_forward_graph = false;
             opt_params.print_backward_graph = false;
-            opt_params.adam.alpha = 1e-3;
-            opt_params.adam.n_iter = 500;
-            opt_params.n_threads = 4;
+            opt_params.adam.alpha = 1e-4;
+            opt_params.adam.n_iter = 1;
 
 
             // apply optimization
@@ -260,7 +261,7 @@ int main(){
             ggml_graph_reset(&gf);
         
             ggml_graph_compute_with_ctx(ctx0, &gf, 4);
-            cout << "Loss After: " << ggml_get_f32_1d(e, 0) ;
+            cout << "loss: " << ggml_get_f32_1d(e, 0) ;
             
             cout << " acc: " << get_batch_accuracy(logits, target) << endl;
         
