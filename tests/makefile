@@ -1,8 +1,8 @@
 OBJ=./objects
 
 
-main: mkdir ${OBJ}/ggml.o  ${OBJ}/test-mul-mat3.o
-	g++ -o main ${OBJ}/test-mul-mat3.o  ${OBJ}/ggml.o -lm -lpthread
+main: mkdir ${OBJ}/ggml.o  ${OBJ}/test-simplernn.o
+	g++ -o main ${OBJ}/test-simplernn.o  ${OBJ}/ggml.o -lm -lpthread
 
 mkdir: 
 	mkdir -p ${OBJ}

@@ -43,6 +43,7 @@ void read_csv(string file_name, vector<int> &labels, vector<vector<int>> &pixels
 	}
     }
 }
+
 float frand() {
     return (float)rand()/(float)RAND_MAX;
 }

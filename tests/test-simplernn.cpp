@@ -1,8 +1,18 @@
 #include <ggml.h>
 #include <iostream>
 #include <vector>
+#include <cstring>
 
 using namespace std; 
+
+void print_2d(ggml_tensor * ts){
+    for (int i1 = 0; i1 < ts->ne[1]; i1++){
+        for (int i0 = 0; i0 < ts->ne[0]; i0++){
+            cout << ggml_get_f32_1d(ts, i1*ts->ne[0] + i0) << " ";    
+        }
+        cout << endl;
+    }   
+}
 
 struct simple_rnn {
     struct ggml_context * ctx;
@@ -41,11 +51,11 @@ struct simple_rnn load_simple_rnn(){
     // Set the values:
     for(int i1 = 0; i1 < 4; i1++){
         for (int i0 = 0 ; i0 < 8; i0 ++){
-            ggml_set_f32_1d(model.kernel, i1*8 + i0, kernel[i1*8 + i0]);
+            ggml_set_f32_1d(model.kernel, i1*8 + i0, kernel[i0*4 + i1]);
         }
 
         for (int i0 = 0; i0 < 4; i0 ++){
-            ggml_set_f32_1d(model.recurrent_kernel, i1*4 + i0, recurrent_kernel[i1*4+i0]);
+            ggml_set_f32_1d(model.recurrent_kernel, i1*4 + i0, recurrent_kernel[i0*4+i1]);
         }
     }
 
@@ -82,11 +92,46 @@ int main(){
         }
     }
 
+
     struct simple_rnn model =  load_simple_rnn();
 
-    // (8, 4)   (8, 3, 2) -> 2, 3, 8 x (8, 4) - 2 > 3->4jjj
-    struct ggml_tensor * output = ggml_mul_mat(ctx, model.kernel, input);
+    struct ggml_tensor * output = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 4, 2);   
+    for (int step = 0; step < 3; step ++){
+        struct ggml_tensor * input_step = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 8, 2);   
 
-    cout << output->ne[0] << ", " << output->ne[1] << ", " << output->ne[2] << endl;
+        // Copy over the data, this should be used as a slicing function
+        for (int batch = 0; batch < 2; batch++){
+            memcpy(
+                (float*) input_step->data + 8*batch,
+                (float*) input->data + batch*24 + step*8 + 0,
+                8*sizeof(float));
+        }
+
+        struct ggml_tensor * h = ggml_mul_mat(ctx, model.kernel, input_step);  // (4, 2)
+        struct ggml_tensor * h1 = ggml_mul_mat(ctx, model.recurrent_kernel, output); // (4, 2)
+        struct ggml_tensor * h2   = ggml_add(ctx, h, h1);
+
+        output = ggml_tanh(ctx, h2);
+    }
+    
+    struct ggml_cgraph gf = ggml_build_forward(output); 
+    ggml_graph_compute_with_ctx(ctx, &gf, 1);
+
+    cout << "kernel" << endl;
+    print_2d(model.kernel);
+    cout << "\nrecurrent_kernel" << endl;
+    print_2d(model.recurrent_kernel);
+    cout << "\noutput" << endl;
+    print_2d(output);
+    
+
+    float expected_output[] = {-0.37519965, -0.57683633,  0.31615578, -0.8848848 , 0.89704936, -0.07763906, -0.54329058,  0.5651122};
+
+    struct ggml_tensor * expected_ts = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 4, 2);
+
+    memcpy(expected_ts->data, expected_output, 8*sizeof(float));
+
+    cout << "\nExpected output: " << endl;
+    print_2d(expected_ts);
     return 0;
 }
