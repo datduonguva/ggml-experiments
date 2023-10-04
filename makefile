@@ -1,10 +1,11 @@
 OBJ=./objects
 
 
-all: mkdir simple_rnn test3
+# TODO: I am here
+all: mkdir simple_rnn test3 rnn_generation 
 
-simple_rnn: ${OBJ}/ggml.o  ${OBJ}/simple_rnn.o
-	g++ -o simple_rnn_main ${OBJ}/simple_rnn.o  ${OBJ}/ggml.o -lm -lpthread
+rnn_generation: ${OBJ}/ggml.o ${OBJ}/rnn_text_gen.o
+	g++ -o rnn_generation_main ${OBJ}/rnn_text_gen.o  ${OBJ}/ggml.o -lm -lpthread
 
 test3: mkdir ${OBJ}/ggml.o ${OBJ}/test3.o
 	g++ -o test3_main ${OBJ}/test3.o ${OBJ}/ggml.o -lm -pthread
@@ -21,7 +22,12 @@ ${OBJ}/simple_rnn.o: simple_rnn/simple_rnn.cpp
 ${OBJ}/test3.o: tests/test-mul-mat3.cpp
 	g++ -I. -o ${OBJ}/test3.o -c tests/test-mul-mat3.cpp
 
+${OBJ}/rnn_text_gen.o: rnn_text_gen/rnn_text_generation.cpp
+	g++ -I. -o ${OBJ}/rnn_text_gen.o -c rnn_text_gen/rnn_text_generation.cpp
+
+
 .PHONY: clean
+
 
 clean:
 	rm -f ${OBJ}/*.o	
