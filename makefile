@@ -5,7 +5,7 @@ OBJ=./objects
 all: mkdir simple_rnn test3 rnn_generation 
 
 rnn_generation: ${OBJ}/ggml.o ${OBJ}/rnn_text_gen.o
-	g++ -o rnn_generation_main ${OBJ}/rnn_text_gen.o  ${OBJ}/ggml.o -lm -lpthread
+	g++ -g -o rnn_generation_main ${OBJ}/rnn_text_gen.o  ${OBJ}/ggml.o -lm -lpthread
 
 test3: mkdir ${OBJ}/ggml.o ${OBJ}/test3.o
 	g++ -o test3_main ${OBJ}/test3.o ${OBJ}/ggml.o -lm -pthread
