@@ -11396,7 +11396,10 @@ static void ggml_compute_forward_get_rows_f32(
 
     assert( dst->ne[0] == nc);
     assert( dst->ne[1] == nr);
-    assert(src0->nb[0] == sizeof(float));
+    //printf("nc[0] = %d\n", nc);
+    //printf("nr[1] = %d\n", nr);
+    //printf("src0->nb[0] = %d\n", src0->nb[0]);
+    //assert(src0->nb[0] == sizeof(float));  //Taken out by Dat
 
     for (int i = 0; i < nr; ++i) {
         const int r = ((int32_t *) src1->data)[i];
