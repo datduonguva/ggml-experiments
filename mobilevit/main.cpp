@@ -57,6 +57,14 @@ struct mobile_net_layer {
     std::vector<inverted_residual_layer> residual_layers;
 };
 
+
+struct mobilevit_transformer {
+    int in_channels;
+    int out_channels;
+    int num_stages;
+    int hidden_size;
+};
+
 struct mobile_vit_layer {
     int in_channels;
     int out_channels;
@@ -235,9 +243,21 @@ void load_model(mobilevit_model & model, std::string model_path){
             model.encoder.layer_3.strides = strides;
             model.encoder.layer_3.hidden_size = hidden_size;
             model.encoder.layer_3.dilation = 1;
-            // TODO: I am right here
 
-            
+
+            auto downsampling_layer = model.encoder.layer_3.downsampling_layer;
+            read_weights(downsampling_layer.expand_1x1.kernel, model.ctx_w, fin);
+            read_weights(downsampling_layer.expand_1x1.gamma, model.ctx_w, fin);
+            read_weights(downsampling_layer.expand_1x1.beta, model.ctx_w, fin);
+
+            read_weights(downsampling_layer.conv_3x3.kernel, model.ctx_w, fin);
+            read_weights(downsampling_layer.conv_3x3.gamma, model.ctx_w, fin);
+            read_weights(downsampling_layer.conv_3x3.beta, model.ctx_w, fin);
+
+            read_weights(downsampling_layer.reduce_1x1.kernel, model.ctx_w, fin);
+            read_weights(downsampling_layer.reduce_1x1.gamma, model.ctx_w, fin);
+            read_weights(downsampling_layer.reduce_1x1.beta, model.ctx_w, fin);
+           
         }
 
         // read layer 4

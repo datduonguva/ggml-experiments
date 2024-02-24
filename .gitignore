@@ -31,3 +31,8 @@ zig-cache/
 *.dot
 
 *.sw?
+
+objects/*
+.objects/*
+*.ggml
+*.bin
