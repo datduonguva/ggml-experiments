@@ -52,14 +52,18 @@ struct ggml_tensor * square_error_loss(
     return ggml_sum(ctx, ggml_sqr(ctx, ggml_sub(ctx, a, b)));
 }
 
-struct ggml_tensor * cross_entropy_loss(struct ggml_context * ctx, struct ggml_tensor * a, struct ggml_tensor * b) {
+struct ggml_tensor * cross_entropy_loss(
+    struct ggml_context * ctx,
+    struct ggml_tensor * a,
+    struct ggml_tensor * b
+) {
     const float eps = 1e-3f;
     return
         ggml_sum(ctx,
             ggml_neg(ctx,
                 ggml_sum_rows(ctx,
                     ggml_mul(ctx,
-			a,
+			            a,
                         ggml_log(ctx,
                             ggml_add1(ctx,
                                 ggml_soft_max(ctx, b),
