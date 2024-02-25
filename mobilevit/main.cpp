@@ -57,12 +57,43 @@ struct mobile_net_layer {
     std::vector<inverted_residual_layer> residual_layers;
 };
 
+struct mobilevit_transformer_layer{
+    // attention
+    ggml_tensor * attention_query_kernel;
+    ggml_tensor * attention_query_bias;
+
+    ggml_tensor * attention_key_kernel;
+    ggml_tensor * attention_key_bias;
+
+    ggml_tensor * attention_value_kernel;
+    ggml_tensor * attention_value_bias;
+
+    ggml_tensor * attention_output_kernel;
+    ggml_tensor * attention_output_bias;
+
+    // intermediate
+    ggml_tensor * intermediate_kernel;
+    ggml_tensor * intermediate_bias;
+
+    // output
+    ggml_tensor * output_kernel;
+    ggml_tensor * output_bias;
+
+    // layernorm_before
+    ggml_tensor * lb_gamma;
+    ggml_tensor * lb_beta;
+
+    // layernorm_after
+    ggml_tensor * la_gamma;
+    ggml_tensor * la_beta;
+};
 
 struct mobilevit_transformer {
     int in_channels;
     int out_channels;
     int num_stages;
     int hidden_size;
+    std::vector<mobilevit_transformer_layer> layers;
 };
 
 struct mobile_vit_layer {
@@ -100,26 +131,26 @@ struct mobilevit_model {
     struct ggml_context * ctx_w;    // context for model's weights
 };
 
-
 void read_weights(ggml_tensor * tensor, ggml_context * ctx_w, std::ifstream &fin){
     int name_length, n_dims;
     // read name_length
     fin.read(reinterpret_cast<char *>(&name_length), sizeof(name_length));
-    std::cout << "name length: " <<  name_length << std::endl;
 
     // read name
     std::string name(name_length, 0);
     fin.read(&name[0], name_length);
-    std::cout << "name: " << name << std::endl;
+    std::cout << "name: " << name << " ";
 
     // read n_dims
     fin.read(reinterpret_cast<char *>(&n_dims), sizeof(n_dims));
-    std::cout << "n_dims: " << n_dims << std::endl;
+    std::cout << "n_dims: " << n_dims << ". ";
     
     int dims[4];
+    std::cout << "Dim: (";
     for (int i = 0; i < n_dims; i++){
         fin.read(reinterpret_cast<char *>(&dims[i]), sizeof(int));
-        std::cout << "dim: " << dims[i] << std::endl;
+        std::cout <<  dims[i];
+        if (i == n_dims - 1) std::cout << ")\n"; else std::cout << ", ";
     }
     // read the kernel
     if (n_dims == 4){ 
@@ -139,6 +170,19 @@ void read_weights(ggml_tensor * tensor, ggml_context * ctx_w, std::ifstream &fin
     );
 }
  
+void read_weights(
+    mobilevit_conv_layer & layer,
+    ggml_context * ctx_w,
+    std::ifstream &fin,
+    bool read_gamma=true,
+    bool read_beta=true
+){
+    read_weights(layer.kernel, ctx_w, fin); 
+    if (read_gamma) read_weights(layer.gamma, ctx_w, fin);
+    if (read_beta) read_weights(layer.beta, ctx_w, fin);
+}
+
+
 void load_model(mobilevit_model & model, std::string model_path){
     auto fin = std::ifstream(model_path, std::ios::binary);
     if (!fin){
@@ -147,9 +191,7 @@ void load_model(mobilevit_model & model, std::string model_path){
 
     // read layer conv_stem
     {
-        read_weights(model.conv_stem.kernel, model.ctx_w, fin); 
-        read_weights(model.conv_stem.gamma, model.ctx_w, fin);
-        read_weights(model.conv_stem.beta, model.ctx_w, fin);
+        read_weights(model.conv_stem, model.ctx_w, fin); 
     }
 
 
@@ -174,17 +216,9 @@ void load_model(mobilevit_model & model, std::string model_path){
                 residual_layer.out_channels = out_channels;
                 residual_layer.strides = i == 0 ? strides : 1;
                 
-                read_weights(residual_layer.expand_1x1.kernel, model.ctx_w, fin);
-                read_weights(residual_layer.expand_1x1.gamma, model.ctx_w, fin);
-                read_weights(residual_layer.expand_1x1.beta, model.ctx_w, fin);
-
-                read_weights(residual_layer.conv_3x3.kernel, model.ctx_w, fin);
-                read_weights(residual_layer.conv_3x3.gamma, model.ctx_w, fin);
-                read_weights(residual_layer.conv_3x3.beta, model.ctx_w, fin);
-
-                read_weights(residual_layer.reduce_1x1.kernel, model.ctx_w, fin);
-                read_weights(residual_layer.reduce_1x1.gamma, model.ctx_w, fin);
-                read_weights(residual_layer.reduce_1x1.beta, model.ctx_w, fin);
+                read_weights(residual_layer.expand_1x1, model.ctx_w, fin);
+                read_weights(residual_layer.conv_3x3, model.ctx_w, fin);
+                read_weights(residual_layer.reduce_1x1, model.ctx_w, fin);
 
                 // after the first residual layer, in_channels equals out_channels
                 in_channels = out_channels;
@@ -211,18 +245,9 @@ void load_model(mobilevit_model & model, std::string model_path){
                 residual_layer.out_channels = out_channels;
                 residual_layer.strides = i == 0 ? strides : 1;
                 
-                read_weights(residual_layer.expand_1x1.kernel, model.ctx_w, fin);
-                read_weights(residual_layer.expand_1x1.gamma, model.ctx_w, fin);
-                read_weights(residual_layer.expand_1x1.beta, model.ctx_w, fin);
-
-                read_weights(residual_layer.conv_3x3.kernel, model.ctx_w, fin);
-                read_weights(residual_layer.conv_3x3.gamma, model.ctx_w, fin);
-                read_weights(residual_layer.conv_3x3.beta, model.ctx_w, fin);
-
-                read_weights(residual_layer.reduce_1x1.kernel, model.ctx_w, fin);
-                read_weights(residual_layer.reduce_1x1.gamma, model.ctx_w, fin);
-                read_weights(residual_layer.reduce_1x1.beta, model.ctx_w, fin);
-
+                read_weights(residual_layer.expand_1x1, model.ctx_w, fin);
+                read_weights(residual_layer.conv_3x3, model.ctx_w, fin);
+                read_weights(residual_layer.reduce_1x1, model.ctx_w, fin);
                 // after the first residual layer, in_channels equals out_channels
                 in_channels = out_channels;
             }
@@ -246,18 +271,47 @@ void load_model(mobilevit_model & model, std::string model_path){
 
 
             auto downsampling_layer = model.encoder.layer_3.downsampling_layer;
-            read_weights(downsampling_layer.expand_1x1.kernel, model.ctx_w, fin);
-            read_weights(downsampling_layer.expand_1x1.gamma, model.ctx_w, fin);
-            read_weights(downsampling_layer.expand_1x1.beta, model.ctx_w, fin);
-
-            read_weights(downsampling_layer.conv_3x3.kernel, model.ctx_w, fin);
-            read_weights(downsampling_layer.conv_3x3.gamma, model.ctx_w, fin);
-            read_weights(downsampling_layer.conv_3x3.beta, model.ctx_w, fin);
-
-            read_weights(downsampling_layer.reduce_1x1.kernel, model.ctx_w, fin);
-            read_weights(downsampling_layer.reduce_1x1.gamma, model.ctx_w, fin);
-            read_weights(downsampling_layer.reduce_1x1.beta, model.ctx_w, fin);
+            read_weights(downsampling_layer.expand_1x1, model.ctx_w, fin);
+            read_weights(downsampling_layer.conv_3x3, model.ctx_w, fin);
+            read_weights(downsampling_layer.reduce_1x1, model.ctx_w, fin);
            
+            read_weights(model.encoder.layer_3.conv_kxk, model.ctx_w, fin);
+            // this conv_1x1 doesn't have normalization, so, there is no gamma and betta parameters
+            read_weights(model.encoder.layer_3.conv_1x1, model.ctx_w, fin, false, false);
+
+            // read the transformer layers:
+            model.encoder.layer_3.transformer.layers.resize(num_stages);
+            for (int i = 0; i < num_stages; i++){
+                auto layer = model.encoder.layer_3.transformer.layers[0]; 
+
+                read_weights(layer.attention_query_kernel, model.ctx_w, fin);
+                read_weights(layer.attention_query_bias, model.ctx_w, fin);
+                read_weights(layer.attention_key_kernel, model.ctx_w, fin); 
+                read_weights(layer.attention_key_bias, model.ctx_w, fin);
+                read_weights(layer.attention_value_kernel, model.ctx_w, fin);
+                read_weights(layer.attention_value_bias, model.ctx_w, fin);
+                read_weights(layer.attention_output_kernel, model.ctx_w, fin);
+                read_weights(layer.attention_output_bias, model.ctx_w, fin);
+
+
+                // intermediate
+                read_weights(layer.intermediate_kernel, model.ctx_w, fin);
+                read_weights(layer.intermediate_kernel, model.ctx_w, fin);   
+
+
+                // output
+                read_weights(layer.output_kernel, model.ctx_w, fin);
+                read_weights(layer.output_bias, model.ctx_w, fin);
+
+                // layernorm_before
+                read_weights(layer.lb_gamma, model.ctx_w, fin);
+                read_weights(layer.lb_beta, model.ctx_w, fin);
+
+                // layernorm_after
+                read_weights(layer.la_gamma, model.ctx_w, fin);
+                read_weights(layer.la_beta, model.ctx_w, fin);
+
+            }
         }
 
         // read layer 4
