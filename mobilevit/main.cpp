@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 #include <algorithm>
+#include <map>
 
 struct mobilevit_hparams {
     int num_channels = 3;
@@ -36,6 +37,8 @@ struct mobilevit_conv_layer {
 //    struct ggml_tensor * bias;    // this conv layer never use bias
     struct ggml_tensor * gamma;
     struct ggml_tensor * beta;
+    struct ggml_tensor * moving_mean;
+    struct ggml_tensor * moving_variance;
 };
 
 struct inverted_residual_layer {
@@ -132,9 +135,12 @@ struct mobilevit_model {
     mobilevit_encoder encoder;  
 
     struct ggml_context * ctx_w;    // context for model's weights
+    std::map<std::string, ggml_tensor *> tensors;
 };
 
+int total_weights = 0;
 void read_weights(ggml_tensor * tensor, ggml_context * ctx_w, std::ifstream &fin){
+    total_weights += 1;
     int name_length, n_dims;
     // read name_length
     fin.read(reinterpret_cast<char *>(&name_length), sizeof(name_length));
@@ -173,6 +179,57 @@ void read_weights(ggml_tensor * tensor, ggml_context * ctx_w, std::ifstream &fin
     );
 }
  
+void read_all_weights(mobilevit_model& model, std::ifstream &fin){
+    // First, read all the weights
+    while (true){
+        total_weights += 1;
+        int name_length, n_dims;
+        // read name_length
+        fin.read(reinterpret_cast<char *>(&name_length), sizeof(name_length));
+
+        // read name
+        std::string name(name_length, 0);
+        fin.read(&name[0], name_length);
+        std::cout << "name: ***" << name << "*** ";
+
+        // read n_dims
+        fin.read(reinterpret_cast<char *>(&n_dims), sizeof(n_dims));
+        std::cout << "n_dims: " << n_dims << ". ";
+        
+        int dims[4];
+        std::cout << "Dim: (";
+        for (int i = 0; i < n_dims; i++){
+            fin.read(reinterpret_cast<char *>(&dims[i]), sizeof(int));
+            std::cout <<  dims[i];
+            if (i == n_dims - 1) std::cout << ")\n"; else std::cout << ", ";
+        }
+        // read the kernel
+        auto ctx_w = model.ctx_w;
+        ggml_tensor * tensor;
+        if (n_dims == 4){ 
+            tensor = ggml_new_tensor_4d(ctx_w, GGML_TYPE_F32, dims[0], dims[1], dims[2], dims[3]);
+        }else if (n_dims == 3){
+            tensor = ggml_new_tensor_3d(ctx_w, GGML_TYPE_F32, dims[0], dims[1], dims[2]);
+        }else if (n_dims == 2){
+            tensor = ggml_new_tensor_2d(ctx_w, GGML_TYPE_F32, dims[0], dims[1]);
+        }else if (n_dims == 1){
+            tensor = ggml_new_tensor_1d(ctx_w, GGML_TYPE_F32, dims[0]);
+        }
+
+
+        fin.read(
+            reinterpret_cast<char *>(tensor->data),
+            ggml_nbytes(tensor)
+        );
+        
+        model.tensors[name] = tensor;
+        name  = "alskdjfasdf";
+
+        if (fin.eof()) {std::cout << "done loading" << "\n"; break;}
+
+    }
+}
+ 
 // overloading read mobileit_conv_layer
 void read_weights(
     mobilevit_conv_layer & layer,
@@ -186,89 +243,136 @@ void read_weights(
     if (read_beta) read_weights(layer.beta, ctx_w, fin);
 }
 
-// overloading read transformer layers
-void read_weights(
-    mobilevit_transformer_layer & layer,
-    ggml_context * ctx_w,
-    std::ifstream &fin,
-    bool read_gamma=true,
-    bool read_beta=true
+void assign_weights(
+    mobilevit_conv_layer & layer,
+    std::string path,
+    std::map<std::string, ggml_tensor *> tensors,
+    bool read_gamma=true
 ){
 
-    read_weights(layer.attention_query_kernel, ctx_w, fin);
-    read_weights(layer.attention_query_bias, ctx_w, fin);
+    layer.kernel = tensors.at(path + "/convolution/kernel:0");
+    if (read_gamma){
+        layer.gamma = tensors.at(path + "/normalization/gamma:0");
+        layer.beta = tensors.at(path + "/normalization/beta:0");
+        layer.moving_mean = tensors.at(path + "/normalization/moving_mean:0");
+        layer.moving_variance = tensors.at(path + "/normalization/moving_variance:0");
+    }    
 
-    read_weights(layer.attention_key_kernel, ctx_w, fin); 
-    read_weights(layer.attention_key_bias, ctx_w, fin);
+    std::cout << "Done: " << path << "\n";
+}
 
-    read_weights(layer.attention_value_kernel, ctx_w, fin);
-    read_weights(layer.attention_value_bias, ctx_w, fin);
 
-    read_weights(layer.attention_output_kernel, ctx_w, fin);
-    read_weights(layer.attention_output_bias, ctx_w, fin);
+// overloading read transformer layers
+void assign_weights(
+    mobilevit_transformer_layer & layer,
+    std::string path,
+    std::map<std::string, ggml_tensor*> & tensors,
+    bool read_gamma=true
+){
+
+    layer.attention_query_kernel = tensors.at(path + "/attention/attention/query/kernel:0");
+    layer.attention_query_bias = tensors.at(path + "/attention/attention/query/bias:0");
+
+    layer.attention_key_kernel = tensors.at(path + "/attention/attention/key/kernel:0");
+    layer.attention_key_bias = tensors.at(path + "/attention/attention/key/bias:0");
+
+    layer.attention_value_kernel = tensors.at(path + "/attention/attention/value/kernel:0");
+    layer.attention_value_bias = tensors.at(path + "/attention/attention/value/bias:0");
+
+    layer.attention_output_kernel = tensors.at(path + "/attention/output/dense/kernel:0");
+    layer.attention_output_bias = tensors.at(path + "/attention/output/dense/bias:0");
 
 
     // intermediate
-    read_weights(layer.intermediate_kernel, ctx_w, fin);
-    read_weights(layer.intermediate_kernel, ctx_w, fin);   
+    layer.intermediate_kernel = tensors.at(path + "/intermediate/dense/kernel:0");
+    layer.intermediate_bias = tensors.at(path + "/intermediate/dense/bias:0");
 
 
     // output
-    read_weights(layer.output_kernel, ctx_w, fin);
-    read_weights(layer.output_bias, ctx_w, fin);
+    layer.output_kernel = tensors.at(path + "/output/dense/kernel:0");
+    layer.output_bias = tensors.at(path + "/output/dense/bias:0");
+
 
     // layernorm_before
-    read_weights(layer.lb_gamma, ctx_w, fin);
-    read_weights(layer.lb_beta, ctx_w, fin);
+    layer.lb_gamma = tensors.at(path + "/layernorm_before/gamma:0");
+    layer.lb_beta = tensors.at(path + "/layernorm_before/beta:0");
 
     // layernorm_after
-    read_weights(layer.la_gamma, ctx_w, fin);
-    read_weights(layer.la_beta, ctx_w, fin);
+    layer.la_gamma = tensors.at(path + "/layernorm_after/gamma:0");
+    layer.la_beta = tensors.at(path + "/layernorm_after/beta:0");
+
+    std::cout << "Done: " << path << "\n";
 }
 
-// overloading the read_weights ofthe mobile_vit_layer
-void read_weights(mobile_vit_layer &layer, ggml_context * ctx_w, std::ifstream &fin){
-    auto downsampling_layer = layer.downsampling_layer;
-    read_weights(downsampling_layer.expand_1x1, ctx_w, fin);
-    read_weights(downsampling_layer.conv_3x3, ctx_w, fin);
-    read_weights(downsampling_layer.reduce_1x1, ctx_w, fin);
+// overloading the read_weights of the mobile_vit_layer
+void assign_weights(
+    mobile_vit_layer &layer,
+    std::string path,
+    std::map<std::string, ggml_tensor*> & tensors
+){
+    auto & downsampling_layer = layer.downsampling_layer;
+    assign_weights(downsampling_layer.expand_1x1, path + "/downsampling_layer/expand_1x1", tensors);
+    assign_weights(downsampling_layer.conv_3x3, path + "/downsampling_layer/conv_3x3", tensors);
+    assign_weights(downsampling_layer.reduce_1x1, path + "/downsampling_layer/reduce_1x1", tensors);
    
-    read_weights(layer.conv_kxk, ctx_w, fin);
+    assign_weights(layer.conv_kxk, path + "/conv_kxk", tensors);
     // this conv_1x1 doesn't have normalization, so, there is no gamma and betta parameters
-    read_weights(layer.conv_1x1, ctx_w, fin, false, false);
+    assign_weights(layer.conv_1x1, path + "/conv_1x1", tensors, false);
 
     // read the transformer layers:
     layer.transformer.layers.resize(layer.num_stages);
     for (int i = 0; i < layer.num_stages; i++){
-        auto transformer_layer = layer.transformer.layers[0]; 
-        read_weights(transformer_layer, ctx_w, fin);
+        auto & transformer_layer = layer.transformer.layers[0]; 
+        assign_weights(transformer_layer, path + "/transformer/layer." + std::to_string(i), tensors);
     }
     // read the layernorm
-    read_weights(layer.layernorm_alpha, ctx_w, fin);
-    read_weights(layer.layernorm_beta, ctx_w, fin);
+    layer.layernorm_alpha = tensors.at(path + "/layernorm/gamma:0");
+    layer.layernorm_beta = tensors.at(path + "/layernorm/beta:0");
 
     // read the projection
-    read_weights(layer.conv_projection, ctx_w, fin);
+    assign_weights(layer.conv_projection, path + "/conv_projection", tensors);
 
     // read the fusion
-    read_weights(layer.fusion, ctx_w, fin);
+    assign_weights(layer.fusion, path + "/fusion", tensors);
 
+    std::cout << "Done: " << path << "\n";
 }
 
+void print_shape(ggml_tensor* tensor){
+    if (tensor == NULL){
+        std::cout << "Tensor is empty" << std::endl;
+        return;
+    }
 
-void load_model(mobilevit_model & model, std::string model_path){
+    std::cout << "Dims: (";
+    int n_dims = ggml_n_dims(tensor);
+    for(int i = 0; i < n_dims; i++){
+        if(i != n_dims-1){
+            std::cout << tensor->ne[i] << ", ";   
+        } else{
+            std::cout << tensor->ne[i] << ")\n";   
+        }
+    }
+}
+
+void load_model_v2(mobilevit_model & model, std::string model_path){
     auto fin = std::ifstream(model_path, std::ios::binary);
     if (!fin){
         std::cout << "Error opening file" << std::endl;
     }
 
+    // First, load all the weights into a map <name, tensor>
+    read_all_weights(model, fin); 
+
+
+    // next put the tensor in the right locations for each layers
+
     // read layer conv_stem
     {
-        read_weights(model.conv_stem, model.ctx_w, fin); 
+        assign_weights(model.conv_stem, "tf_mobile_vi_t_model/mobilevit/conv_stem", model.tensors);
     }
 
-
-    // read encoder
+     // read encoder
     {
         // read layer_1
         {
@@ -283,23 +387,25 @@ void load_model(mobilevit_model & model, std::string model_path){
             model.encoder.layer_1.strides = strides;
             model.encoder.layer_1.residual_layers.resize(num_stages);
 
+            std::string path_base = "tf_mobile_vi_t_model/mobilevit/encoder/layer.0/layer.";
             for (int i = 0; i < num_stages; i++){
-                auto residual_layer = model.encoder.layer_1.residual_layers[i];
+                auto & residual_layer = model.encoder.layer_1.residual_layers[i];
+                std::string layer_base = path_base + std::to_string(i);
                 residual_layer.in_channels = in_channels;
                 residual_layer.out_channels = out_channels;
                 residual_layer.strides = i == 0 ? strides : 1;
                 
-                read_weights(residual_layer.expand_1x1, model.ctx_w, fin);
-                read_weights(residual_layer.conv_3x3, model.ctx_w, fin);
-                read_weights(residual_layer.reduce_1x1, model.ctx_w, fin);
+                assign_weights(residual_layer.expand_1x1, layer_base + "/expand_1x1", model.tensors);  
+                assign_weights(residual_layer.conv_3x3, layer_base + "/conv_3x3", model.tensors); 
+                assign_weights(residual_layer.reduce_1x1, layer_base + "/reduce_1x1", model.tensors);
 
                 // after the first residual layer, in_channels equals out_channels
                 in_channels = out_channels;
-            }
 
+            }
         }        
 
-        // read layer 2
+        // assigning weights for layer 2
         {
             int in_channels = model.hparams.neck_hidden_sizes[1];
             int out_channels = model.hparams.neck_hidden_sizes[2];
@@ -312,15 +418,17 @@ void load_model(mobilevit_model & model, std::string model_path){
             model.encoder.layer_2.strides = strides;
             model.encoder.layer_2.residual_layers.resize(num_stages);
 
+            std::string path_base = "tf_mobile_vi_t_model/mobilevit/encoder/layer.1/layer.";
             for (int i = 0; i < num_stages; i++){
-                auto residual_layer = model.encoder.layer_2.residual_layers[i];
+                auto &residual_layer = model.encoder.layer_2.residual_layers[i];
+                std::string layer_base = path_base + std::to_string(i);
                 residual_layer.in_channels = in_channels;
                 residual_layer.out_channels = out_channels;
                 residual_layer.strides = i == 0 ? strides : 1;
                 
-                read_weights(residual_layer.expand_1x1, model.ctx_w, fin);
-                read_weights(residual_layer.conv_3x3, model.ctx_w, fin);
-                read_weights(residual_layer.reduce_1x1, model.ctx_w, fin);
+                assign_weights(residual_layer.expand_1x1, layer_base + "/expand_1x1", model.tensors);
+                assign_weights(residual_layer.conv_3x3, layer_base + "/conv_3x3", model.tensors);
+                assign_weights(residual_layer.reduce_1x1, layer_base + "/reduce_1x1", model.tensors);
                 // after the first residual layer, in_channels equals out_channels
                 in_channels = out_channels;
             }
@@ -341,7 +449,12 @@ void load_model(mobilevit_model & model, std::string model_path){
             model.encoder.layer_3.hidden_size = hidden_size;
             model.encoder.layer_3.dilation = 1;
 
-            read_weights(model.encoder.layer_3, model.ctx_w, fin);
+            assign_weights(
+                model.encoder.layer_3,
+                "tf_mobile_vi_t_model/mobilevit/encoder/layer.2",
+                model.tensors
+            );
+
         }
 
         // read layer 4
@@ -360,7 +473,11 @@ void load_model(mobilevit_model & model, std::string model_path){
             model.encoder.layer_4.hidden_size = hidden_size;
             model.encoder.layer_4.dilation = 1;
 
-            read_weights(model.encoder.layer_4, model.ctx_w, fin); 
+            assign_weights(
+                model.encoder.layer_4,
+                "tf_mobile_vi_t_model/mobilevit/encoder/layer.3",
+                model.tensors
+            );
         }
 
         // read layer 5
@@ -379,11 +496,15 @@ void load_model(mobilevit_model & model, std::string model_path){
             model.encoder.layer_4.hidden_size = hidden_size;
             model.encoder.layer_4.dilation = 1;
 
-            read_weights(model.encoder.layer_4, model.ctx_w, fin); 
+            assign_weights(
+                model.encoder.layer_4,
+                "tf_mobile_vi_t_model/mobilevit/encoder/layer.4",
+                model.tensors
+            );
         }
-    }
 
-    fin.close();
+
+    }
 }
 
 int main(int argc, char ** argv) {
@@ -400,6 +521,8 @@ int main(int argc, char ** argv) {
         }
     }
 
-    load_model(model, "weight.ggml");
+    load_model_v2(model, "weight.ggml");
+
+    std::cout << "Total weights: " << total_weights << std::endl;
     return 0;
 }
