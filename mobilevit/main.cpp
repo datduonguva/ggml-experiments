@@ -1,5 +1,6 @@
 #include "ggml/ggml.h"
-
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h"
 #include "common.h"
 #include <iostream>
 #include <cmath>
@@ -507,7 +508,42 @@ void load_model_v2(mobilevit_model & model, std::string model_path){
     }
 }
 
+struct sam_image_u8 {
+    int nx, ny;
+    std::vector<uint8_t> data;
+};
+
+bool sam_image_load_from_file(
+    std::string &name,
+    sam_image_u8 &img
+){
+    int nx, ny, nc;
+    auto data = stbi_load(name.c_str(), &nx, &ny, &nc, 3);
+
+    if (!data){
+        std::cout << "Failed to load data\n";
+        return false;
+    }
+
+    img.nx = nx;
+    img.ny = ny;
+    img.data.resize(nx * ny * 3);
+    memcpy(img.data.data(), data, nx * ny * 3);
+    stbi_image_free(data);
+    return true;
+}
+
+
 int main(int argc, char ** argv) {
+
+    // load image
+    sam_image_u8 img0;
+    std::string image_path = "/home/duongquocdat7411/tmp/sin(x).jpg";
+
+    if (!sam_image_load_from_file(image_path, img0)){
+        std::cout << "Failed to load image from file\n";
+    }
+    std::cout << "Size: "<< img0.nx << ", " << img0.ny << ", " << img0.data.size() << std::endl;
     ggml_time_init();
     mobilevit_model model;
 
@@ -521,8 +557,8 @@ int main(int argc, char ** argv) {
         }
     }
 
-    load_model_v2(model, "weight.ggml");
+//    load_model_v2(model, "weight.ggml");
 
-    std::cout << "Total weights: " << total_weights << std::endl;
+//    std::cout << "Total weights: " << total_weights << std::endl;
     return 0;
 }
