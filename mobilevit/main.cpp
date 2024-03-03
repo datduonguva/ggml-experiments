@@ -162,13 +162,14 @@ void read_weights(ggml_tensor * tensor, ggml_context * ctx_w, std::ifstream &fin
         std::cout <<  dims[i];
         if (i == n_dims - 1) std::cout << ")\n"; else std::cout << ", ";
     }
+
     // read the kernel
     if (n_dims == 4){ 
-        tensor = ggml_new_tensor_4d(ctx_w, GGML_TYPE_F32, dims[0], dims[1], dims[2], dims[3]);
+        tensor = ggml_new_tensor_4d(ctx_w, GGML_TYPE_F32, dims[3], dims[2], dims[1], dims[0]);
     }else if (n_dims == 3){
-        tensor = ggml_new_tensor_3d(ctx_w, GGML_TYPE_F32, dims[0], dims[1], dims[2]);
+        tensor = ggml_new_tensor_3d(ctx_w, GGML_TYPE_F32, dims[2], dims[1], dims[0]);
     }else if (n_dims == 2){
-        tensor = ggml_new_tensor_2d(ctx_w, GGML_TYPE_F32, dims[0], dims[1]);
+        tensor = ggml_new_tensor_2d(ctx_w, GGML_TYPE_F32, dims[1], dims[0]);
     }else if (n_dims == 1){
         tensor = ggml_new_tensor_1d(ctx_w, GGML_TYPE_F32, dims[0]);
     }
@@ -185,6 +186,7 @@ void read_all_weights(mobilevit_model& model, std::ifstream &fin){
     while (true){
         total_weights += 1;
         int name_length, n_dims;
+        bool is_f16 = false;
         // read name_length
         fin.read(reinterpret_cast<char *>(&name_length), sizeof(name_length));
 
@@ -193,11 +195,17 @@ void read_all_weights(mobilevit_model& model, std::ifstream &fin){
         fin.read(&name[0], name_length);
         std::cout << "name: ***" << name << "*** ";
 
+        // if the string contstrain convolution, change the datatypes to f32
+        if (name.find("convolution") != std::string::npos){
+            std::cout << " I am here\n";
+            is_f16 = true;
+        }
+
         // read n_dims
         fin.read(reinterpret_cast<char *>(&n_dims), sizeof(n_dims));
         std::cout << "n_dims: " << n_dims << ". ";
         
-        int dims[4];
+        int dims[4] = {1, 1, 1, 1};
         std::cout << "Dim: (";
         for (int i = 0; i < n_dims; i++){
             fin.read(reinterpret_cast<char *>(&dims[i]), sizeof(int));
@@ -208,23 +216,38 @@ void read_all_weights(mobilevit_model& model, std::ifstream &fin){
         auto ctx_w = model.ctx_w;
         ggml_tensor * tensor;
         if (n_dims == 4){ 
-            tensor = ggml_new_tensor_4d(ctx_w, GGML_TYPE_F32, dims[0], dims[1], dims[2], dims[3]);
+            if (is_f16){
+                tensor = ggml_new_tensor_4d(ctx_w, GGML_TYPE_F16, dims[3], dims[2], dims[1], dims[0]);
+            } else{
+                tensor = ggml_new_tensor_4d(ctx_w, GGML_TYPE_F32, dims[3], dims[2], dims[1], dims[0]);
+            }
         }else if (n_dims == 3){
-            tensor = ggml_new_tensor_3d(ctx_w, GGML_TYPE_F32, dims[0], dims[1], dims[2]);
+            tensor = ggml_new_tensor_3d(ctx_w, GGML_TYPE_F32, dims[2], dims[1], dims[0]);
         }else if (n_dims == 2){
-            tensor = ggml_new_tensor_2d(ctx_w, GGML_TYPE_F32, dims[0], dims[1]);
+            tensor = ggml_new_tensor_2d(ctx_w, GGML_TYPE_F32, dims[1], dims[0]);
         }else if (n_dims == 1){
             tensor = ggml_new_tensor_1d(ctx_w, GGML_TYPE_F32, dims[0]);
         }
 
 
+        int matrix_size = dims[0]*dims[1]*dims[2]*dims[3];
+        std::vector<float> original_data(matrix_size);
         fin.read(
-            reinterpret_cast<char *>(tensor->data),
-            ggml_nbytes(tensor)
+            reinterpret_cast<char *>(original_data.data()), matrix_size*sizeof(float)
         );
+
+        // if ithe data is f16, convert, else, assign
+
+        if (is_f16){
+            std::vector<ggml_fp16_t> f16data (matrix_size);
+            ggml_fp32_to_fp16_row(original_data.data(), f16data.data(), matrix_size);
+            memcpy(tensor->data, f16data.data(), ggml_nbytes(tensor));
+            std::cout << "original: "<< matrix_size*sizeof(float) << ", converted: " << ggml_nbytes(tensor) << "\n";
+        }else{
+            memcpy(tensor->data, original_data.data(), ggml_nbytes(tensor));
+        }
         
         model.tensors[name] = tensor;
-        name  = "alskdjfasdf";
 
         if (fin.eof()) {std::cout << "done loading" << "\n"; break;}
 
@@ -339,7 +362,8 @@ void assign_weights(
     std::cout << "Done: " << path << "\n";
 }
 
-void print_shape(ggml_tensor* tensor){
+void print_shape(std::string name, ggml_tensor* tensor){
+    std::cout << name << ": ";
     if (tensor == NULL){
         std::cout << "Tensor is empty" << std::endl;
         return;
@@ -508,6 +532,13 @@ void load_model_v2(mobilevit_model & model, std::string model_path){
     }
 }
 
+struct sam_image_f32 {                                                                              
+    int nx;                                                                                         
+    int ny;                                                                                         
+                                                                                                    
+    std::vector<float> data;                                                                        
+}; 
+
 struct sam_image_u8 {
     int nx, ny;
     std::vector<uint8_t> data;
@@ -534,16 +565,132 @@ bool sam_image_load_from_file(
 }
 
 
+bool sam_image_preprocess(const sam_image_u8 & img, sam_image_f32 & res) {
+    const int nx = img.nx;
+    const int ny = img.ny;
+
+    const int nx2 = 256;
+    const int ny2 = 256;
+
+    res.nx = nx2;
+    res.ny = ny2;
+    res.data.resize(3*nx2*ny2);
+
+    const float scale = std::max(nx, ny)*1.0f /(float) nx2;
+
+    fprintf(stderr, "%s: scale = %f\n", __func__, scale);
+
+    const int nx3 = int(nx/scale + 0.5f);
+    const int ny3 = int(ny/scale + 0.5f);
+
+//    const float m3[3] = { 123.675f, 116.280f, 103.530f };
+//    const float s3[3] = {  58.395f,  57.120f,  57.375f };
+    const float m3[3] = {0.0f, 0.0f, 0.0f};
+    const float s3[3] = {255.0f, 255.0f, 255.0f};
+
+    for (int y = 0; y < ny3; y++) {                                                                 
+        for (int x = 0; x < nx3; x++) {                                                             
+            for (int c = 0; c < 3; c++) {                                                           
+                // linear interpolation                                                             
+                const float sx = (x + 0.5f)*scale - 0.5f;                                           
+                const float sy = (y + 0.5f)*scale - 0.5f;                                           
+                                                                                                    
+                const int x0 = std::max(0, (int) std::floor(sx));                                   
+                const int y0 = std::max(0, (int) std::floor(sy));                                   
+                                                                                                    
+                const int x1 = std::min(x0 + 1, nx - 1);                                            
+                const int y1 = std::min(y0 + 1, ny - 1);                                            
+                                                                                                    
+                const float dx = sx - x0;                                                           
+                const float dy = sy - y0;                                                           
+                                                                                                    
+                const int j00 = 3*(y0*nx + x0) + c;                                                 
+                const int j01 = 3*(y0*nx + x1) + c;                                                 
+                const int j10 = 3*(y1*nx + x0) + c;                                                 
+                const int j11 = 3*(y1*nx + x1) + c;                                                 
+                                                                                                    
+                const float v00 = img.data[j00];                                                    
+                const float v01 = img.data[j01];                                                    
+                const float v10 = img.data[j10];                                                    
+                const float v11 = img.data[j11];                                                    
+                                                                                                    
+                const float v0 = v00*(1.0f - dx) + v01*dx;                                          
+                const float v1 = v10*(1.0f - dx) + v11*dx;                                          
+                                                                                                    
+                const float v = v0*(1.0f - dy) + v1*dy;                                             
+                                                                                                    
+                const uint8_t v2 = std::min(std::max(std::round(v), 0.0f), 255.0f);                 
+                                                                                                    
+                const int i = 3*(y*nx3 + x) + c;                                                    
+                res.data[i] = (float(v2) - m3[c]) / s3[c];                                          
+            }                                                                                       
+        }                                                                                           
+    }                                                                                               
+                                                                                                    
+    return true;                                                                                    
+}
+
+
+ggml_cgraph * encode_image(
+    const mobilevit_model & model,
+    const sam_image_f32 & img
+){
+    struct ggml_init_params params = { 128 * 1024 * 1024, NULL, false};
+
+    ggml_context * ctx0 = ggml_init(params);
+    ggml_cgraph * gf = ggml_new_graph(ctx0);
+
+    // input to the model is the actual image
+
+    ggml_tensor * inp = ggml_new_tensor_4d(ctx0, GGML_TYPE_F32, 256, 256, 3, 1);
+
+    ggml_set_name(inp, "inp");
+    ggml_set_input(inp);
+
+    ggml_tensor * output = ggml_conv_2d(
+        ctx0,
+        ggml_cont_4d(
+            ctx0,
+            ggml_permute(
+                ctx0,
+                model.conv_stem.kernel,
+                3, 2, 0, 1
+            ),  // (OC, IC, KW, KH) -> (KW, KH, IC, OC)
+            3, 3, 3, 16
+        ),
+        inp,
+        2, 2, // stride
+        1, 1, // padding,
+        1, 1 // dilation
+    );
+
+
+    float * data = (float *) ggml_get_data(inp);
+    for(int k = 0; k < 3;k ++){
+        for(int y =0; y < 256; y++){
+            for(int x = 0; x < 256; x++){
+                data[k * 256 * 256 + y * 256 + x] = img.data[y * 3*  256 + x * 3 + k]; 
+            }
+        }
+    }
+
+
+    ggml_build_forward_expand(gf, output);
+    std::cout << "input " << img.data[0] << "\n";
+
+    ggml_graph_compute_with_ctx(ctx0, gf, 1);
+
+    float * output_data = (float*) output->data;
+    std::cout << "output" << output_data[0] << "\n";
+
+    print_shape("inp: ", inp);
+    print_shape("output: ", output);
+    return gf;
+} 
+
+
 int main(int argc, char ** argv) {
 
-    // load image
-    sam_image_u8 img0;
-    std::string image_path = "/home/duongquocdat7411/tmp/sin(x).jpg";
-
-    if (!sam_image_load_from_file(image_path, img0)){
-        std::cout << "Failed to load image from file\n";
-    }
-    std::cout << "Size: "<< img0.nx << ", " << img0.ny << ", " << img0.data.size() << std::endl;
     ggml_time_init();
     mobilevit_model model;
 
@@ -557,8 +704,28 @@ int main(int argc, char ** argv) {
         }
     }
 
-//    load_model_v2(model, "weight.ggml");
+    // load model weights:
+    load_model_v2(model, "weight.ggml");
+    std::cout << "Total weights: " << total_weights << std::endl;
 
-//    std::cout << "Total weights: " << total_weights << std::endl;
+    // load image
+    sam_image_u8 img0;
+    sam_image_f32 img1;
+    std::string image_path = "/home/datduong/Desktop/IMG_5034.JPG";
+
+    if (!sam_image_load_from_file(image_path, img0)){
+        std::cout << "Failed to load image from file\n";
+    }
+    std::cout << "Size: "<< img0.nx << ", " << img0.ny << ", " << img0.data.size() << std::endl;
+
+    sam_image_preprocess(img0, img1);
+
+    // calculate the graph
+    ggml_cgraph * gf = encode_image(model, img1);
+
+
+    //
+    
+
     return 0;
 }
