@@ -33,6 +33,25 @@ struct mobilevit_hparams {
     bool qkv_bias = true;
 };
 
+void print_shape(std::string name, ggml_tensor* tensor){
+    std::cout << name << ": ";
+    if (tensor == NULL){
+        std::cout << "Tensor is empty" << std::endl;
+        return;
+    }
+
+    std::cout << "Dims: (";
+    int n_dims = ggml_n_dims(tensor);
+    for(int i = 0; i < n_dims; i++){
+        if(i != n_dims-1){
+            std::cout << tensor->ne[i] << ", ";   
+        } else{
+            std::cout << tensor->ne[i] << ")\n";   
+        }
+    }
+}
+
+
 struct mobilevit_conv_layer {
     struct ggml_tensor * kernel;    
 //    struct ggml_tensor * bias;    // this conv layer never use bias
@@ -40,6 +59,86 @@ struct mobilevit_conv_layer {
     struct ggml_tensor * beta;
     struct ggml_tensor * moving_mean;
     struct ggml_tensor * moving_variance;
+
+    struct ggml_tensor * forward(
+        ggml_context * ctx,
+        ggml_tensor * input,
+        int s,
+        bool use_normalization=true,
+        bool depthwise=false
+    ){
+        std::cout <<"mobilevit_conv_layer.forward\n";
+        print_shape("kernel: ", kernel);
+        print_shape("input: ", input);
+
+        int oc = kernel->ne[0];
+        int ic = kernel->ne[1];
+        int kw = kernel->ne[2];
+        int kh = kernel->ne[3];
+        int padding = (kw - 1) /2;
+        struct ggml_tensor * output;
+
+        if (depthwise){
+            std::cout << "in depthwise\n";
+            output = ggml_conv_depthwise_2d(
+                ctx,
+                ggml_cont_4d(
+                    ctx,
+                    ggml_permute(ctx, kernel, 3, 2, 0, 1), // (OC, IC, KW, KH) -> (KW, KH, IC, OC)
+                    kw, kh, ic, oc
+                ),
+                input, s, s, padding, padding, 1, 1 // s0, s1, p0, p1, d0, d1
+            );
+            std::cout << "done depthwise\n";
+        } else{
+            output = ggml_conv_2d(
+                ctx,
+                ggml_cont_4d(
+                    ctx,
+                    ggml_permute(ctx, kernel, 3, 2, 0, 1), // (OC, IC, KW, KH) -> (KW, KH, IC, OC)
+                    kw, kh, ic, oc
+                ),
+                input, s, s, padding, padding, 1, 1 // s0, s1, p0, p1, d0, d1
+            );
+        }
+
+        print_shape("output: ", output);
+        if (use_normalization){
+            output = ggml_sub(
+                ctx,
+                output,
+                ggml_repeat(
+                    ctx,
+                    ggml_cont_4d(
+                        ctx, moving_mean, 1, 1, moving_mean->ne[0], 1
+                    ),
+                    output
+                )
+            );
+            output = ggml_div(
+                ctx,
+                output,
+                ggml_sqrt(
+                    ctx,
+                    ggml_repeat(
+                        ctx,
+                        ggml_cont_4d(ctx, moving_variance, 1, 1, moving_variance->ne[0], 1),
+                        output
+                    )
+                )
+            );
+            output = ggml_mul(
+                ctx,
+                output,
+                ggml_repeat(ctx, ggml_cont_4d(ctx, gamma, 1, 1, gamma->ne[0], 1), output)
+            );
+            output = ggml_add(
+                ctx,
+                output, ggml_repeat(ctx, ggml_cont_4d(ctx, beta, 1, 1, beta->ne[0], 1), output)
+            );
+        }
+        return output;
+    }
 };
 
 struct inverted_residual_layer {
@@ -51,6 +150,27 @@ struct inverted_residual_layer {
     mobilevit_conv_layer expand_1x1;
     mobilevit_conv_layer conv_3x3;
     mobilevit_conv_layer reduce_1x1;
+    
+    ggml_tensor * forward(
+        ggml_context * ctx,
+        ggml_tensor * inp
+    ){
+        ggml_tensor * features = inp; 
+        std::cout << "before expanding\n";
+
+        // forward signature: ctx, inpt, stride, use_normalization, depthwise
+        features = expand_1x1.forward(ctx, features, 1, true ); 
+        std::cout << "before conv3x3\n";
+        features = conv_3x3.forward(ctx, features, strides, true, true);
+        std::cout << "before reducing\n";
+        features = reduce_1x1.forward(ctx, features, 1, true);
+
+        if (strides == 1 && in_channels == out_channels){
+            features = ggml_add(ctx, features, inp);
+        }
+        return features;
+    }
+
 };
 
 struct mobile_net_layer {
@@ -59,6 +179,18 @@ struct mobile_net_layer {
     int num_stages;
     int strides;
     std::vector<inverted_residual_layer> residual_layers;
+
+    // forward
+    ggml_tensor * forward(
+        ggml_context * ctx,
+        ggml_tensor * inp
+    ){
+        for (int i = 0; i < num_stages; i++){
+            inp = residual_layers[i].forward(ctx, inp);
+        }
+
+        return inp;  // placeholder
+    }
 };
 
 struct mobilevit_transformer_layer{
@@ -117,16 +249,38 @@ struct mobile_vit_layer {
     ggml_tensor * layernorm_beta;
     mobilevit_conv_layer conv_projection;
     mobilevit_conv_layer fusion;
+    // forward
+    ggml_tensor * forward(
+        ggml_context * ctx,
+        ggml_tensor * inp
+    ){
+        return inp;  // placeholder
+    }
+
 };
 
 struct mobilevit_encoder {
     mobile_net_layer layer_1;        
     mobile_net_layer layer_2;
 
-
     mobile_vit_layer layer_3;
     mobile_vit_layer layer_4;
     mobile_vit_layer layer_5;
+
+    ggml_tensor * forward(
+        ggml_context * ctx,
+        ggml_tensor * embedding
+    ){
+        std::cout << "through layer_1\n";
+        ggml_tensor * result = layer_1.forward(ctx, embedding);
+        std::cout << "through layer_2\n";
+/        result = layer_2.forward(ctx, result);
+        std::cout << "through layer_3\n";
+        result = layer_3.forward(ctx, result);
+        result = layer_4.forward(ctx, result);
+        result = layer_5.forward(ctx, result);
+        return result;
+    }
 };
 
 struct mobilevit_model {
@@ -140,47 +294,7 @@ struct mobilevit_model {
 };
 
 int total_weights = 0;
-void read_weights(ggml_tensor * tensor, ggml_context * ctx_w, std::ifstream &fin){
-    total_weights += 1;
-    int name_length, n_dims;
-    // read name_length
-    fin.read(reinterpret_cast<char *>(&name_length), sizeof(name_length));
 
-    // read name
-    std::string name(name_length, 0);
-    fin.read(&name[0], name_length);
-    std::cout << "name: " << name << " ";
-
-    // read n_dims
-    fin.read(reinterpret_cast<char *>(&n_dims), sizeof(n_dims));
-    std::cout << "n_dims: " << n_dims << ". ";
-    
-    int dims[4];
-    std::cout << "Dim: (";
-    for (int i = 0; i < n_dims; i++){
-        fin.read(reinterpret_cast<char *>(&dims[i]), sizeof(int));
-        std::cout <<  dims[i];
-        if (i == n_dims - 1) std::cout << ")\n"; else std::cout << ", ";
-    }
-
-    // read the kernel
-    if (n_dims == 4){ 
-        tensor = ggml_new_tensor_4d(ctx_w, GGML_TYPE_F32, dims[3], dims[2], dims[1], dims[0]);
-    }else if (n_dims == 3){
-        tensor = ggml_new_tensor_3d(ctx_w, GGML_TYPE_F32, dims[2], dims[1], dims[0]);
-    }else if (n_dims == 2){
-        tensor = ggml_new_tensor_2d(ctx_w, GGML_TYPE_F32, dims[1], dims[0]);
-    }else if (n_dims == 1){
-        tensor = ggml_new_tensor_1d(ctx_w, GGML_TYPE_F32, dims[0]);
-    }
-
-
-    fin.read(
-        reinterpret_cast<char *>(tensor->data),
-        ggml_nbytes(tensor)
-    );
-}
- 
 void read_all_weights(mobilevit_model& model, std::ifstream &fin){
     // First, read all the weights
     while (true){
@@ -254,28 +368,15 @@ void read_all_weights(mobilevit_model& model, std::ifstream &fin){
     }
 }
  
-// overloading read mobileit_conv_layer
-void read_weights(
-    mobilevit_conv_layer & layer,
-    ggml_context * ctx_w,
-    std::ifstream &fin,
-    bool read_gamma=true,
-    bool read_beta=true
-){
-    read_weights(layer.kernel, ctx_w, fin); 
-    if (read_gamma) read_weights(layer.gamma, ctx_w, fin);
-    if (read_beta) read_weights(layer.beta, ctx_w, fin);
-}
-
 void assign_weights(
     mobilevit_conv_layer & layer,
     std::string path,
     std::map<std::string, ggml_tensor *> tensors,
-    bool read_gamma=true
+    bool use_normalization=true
 ){
 
     layer.kernel = tensors.at(path + "/convolution/kernel:0");
-    if (read_gamma){
+    if (use_normalization){
         layer.gamma = tensors.at(path + "/normalization/gamma:0");
         layer.beta = tensors.at(path + "/normalization/beta:0");
         layer.moving_mean = tensors.at(path + "/normalization/moving_mean:0");
@@ -291,7 +392,7 @@ void assign_weights(
     mobilevit_transformer_layer & layer,
     std::string path,
     std::map<std::string, ggml_tensor*> & tensors,
-    bool read_gamma=true
+    bool use_normalization=true
 ){
 
     layer.attention_query_kernel = tensors.at(path + "/attention/attention/query/kernel:0");
@@ -360,24 +461,6 @@ void assign_weights(
     assign_weights(layer.fusion, path + "/fusion", tensors);
 
     std::cout << "Done: " << path << "\n";
-}
-
-void print_shape(std::string name, ggml_tensor* tensor){
-    std::cout << name << ": ";
-    if (tensor == NULL){
-        std::cout << "Tensor is empty" << std::endl;
-        return;
-    }
-
-    std::cout << "Dims: (";
-    int n_dims = ggml_n_dims(tensor);
-    for(int i = 0; i < n_dims; i++){
-        if(i != n_dims-1){
-            std::cout << tensor->ne[i] << ", ";   
-        } else{
-            std::cout << tensor->ne[i] << ")\n";   
-        }
-    }
 }
 
 void load_model_v2(mobilevit_model & model, std::string model_path){
@@ -631,11 +714,12 @@ bool sam_image_preprocess(const sam_image_u8 & img, sam_image_f32 & res) {
 }
 
 
+
 ggml_cgraph * encode_image(
-    const mobilevit_model & model,
+    mobilevit_model & model,
     const sam_image_f32 & img
 ){
-    struct ggml_init_params params = { 128 * 1024 * 1024, NULL, false};
+    struct ggml_init_params params = { 512 * 1024 * 1024, NULL, false};
 
     ggml_context * ctx0 = ggml_init(params);
     ggml_cgraph * gf = ggml_new_graph(ctx0);
@@ -647,22 +731,11 @@ ggml_cgraph * encode_image(
     ggml_set_name(inp, "inp");
     ggml_set_input(inp);
 
-    ggml_tensor * output = ggml_conv_2d(
-        ctx0,
-        ggml_cont_4d(
-            ctx0,
-            ggml_permute(
-                ctx0,
-                model.conv_stem.kernel,
-                3, 2, 0, 1
-            ),  // (OC, IC, KW, KH) -> (KW, KH, IC, OC)
-            3, 3, 3, 16
-        ),
-        inp,
-        2, 2, // stride
-        1, 1, // padding,
-        1, 1 // dilation
-    );
+    // call the conv_stem
+    ggml_tensor * output = model.conv_stem.forward(ctx0, inp, 2); // [128, 128, 16]
+
+    // call the encoder
+    output = model.encoder.forward(ctx0, output);
 
 
     float * data = (float *) ggml_get_data(inp);
@@ -676,15 +749,14 @@ ggml_cgraph * encode_image(
 
 
     ggml_build_forward_expand(gf, output);
-    std::cout << "input " << img.data[0] << "\n";
 
-    ggml_graph_compute_with_ctx(ctx0, gf, 1);
+    for (int i = 0; i < 10; i++){
+        std::cout << "start compute\n";
+        ggml_graph_compute_with_ctx(ctx0, gf, 1);
+        std::cout << "end compute\n";
+    }
+    ggml_free(ctx0);
 
-    float * output_data = (float*) output->data;
-    std::cout << "output" << output_data[0] << "\n";
-
-    print_shape("inp: ", inp);
-    print_shape("output: ", output);
     return gf;
 } 
 
@@ -718,14 +790,17 @@ int main(int argc, char ** argv) {
     }
     std::cout << "Size: "<< img0.nx << ", " << img0.ny << ", " << img0.data.size() << std::endl;
 
+    const int64_t t0 = ggml_time_us();
     sam_image_preprocess(img0, img1);
 
+    const int64_t t_load_image = ggml_time_us();
     // calculate the graph
     ggml_cgraph * gf = encode_image(model, img1);
 
 
-    //
-    
+    const int64_t t_encode = ggml_time_us();
+    std::cout << "load: " << (t_load_image - t0)/1000.f << "foward: " << (t_encode - t_load_image)/1000.f << "\n";
+    ggml_free(model.ctx_w);
 
     return 0;
 }
