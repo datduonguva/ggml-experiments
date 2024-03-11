@@ -13,6 +13,9 @@
 #include <algorithm>
 #include <map>
 
+
+void print_shape(std::string name, ggml_tensor* tensor);
+
 struct mobilevit_hparams {
     int num_channels = 3;
     int image_size = 256;
@@ -32,24 +35,6 @@ struct mobilevit_hparams {
     float layer_norm_eps = 1e-5;
     bool qkv_bias = true;
 };
-
-void print_shape(std::string name, ggml_tensor* tensor){
-    std::cout << name << ": ";
-    if (tensor == NULL){
-        std::cout << "Tensor is empty" << std::endl;
-        return;
-    }
-
-    std::cout << "Dims: (";
-    int n_dims = ggml_n_dims(tensor);
-    for(int i = 0; i < n_dims; i++){
-        if(i != n_dims-1){
-            std::cout << tensor->ne[i] << ", ";   
-        } else{
-            std::cout << tensor->ne[i] << ")\n";   
-        }
-    }
-}
 
 
 struct mobilevit_conv_layer {
@@ -95,8 +80,7 @@ struct mobile_net_layer {
 
     // forward
     ggml_tensor * forward(
-        ggml_context * ctx,
-        ggml_tensor * inp
+        ggml_context * ctx, ggml_tensor * inp
     ){
         for (int i = 0; i < num_stages; i++){
             inp = residual_layers[i].forward(ctx, inp);
@@ -134,14 +118,19 @@ struct mobilevit_transformer_layer{
     // layernorm_after
     ggml_tensor * la_gamma;
     ggml_tensor * la_beta;
+
+
+    ggml_tensor * forward(ggml_context * ctx, ggml_tensor * inp, float layer_norm_esp, int num_head);
 };
 
+// a transformers has many transformer layers
 struct mobilevit_transformer {
-    int in_channels;
-    int out_channels;
     int num_stages;
     int hidden_size;
+    int num_head;
     std::vector<mobilevit_transformer_layer> layers;
+
+    ggml_tensor * forward(ggml_context * ctx, ggml_tensor * inp, float layer_norm_esp);
 };
 
 struct mobile_vit_layer {
@@ -151,6 +140,7 @@ struct mobile_vit_layer {
     int strides = 2;
     int patch_size = 2;
     int hidden_size;
+    float layer_norm_esp;
     int dilation;
 
     inverted_residual_layer downsampling_layer;
@@ -176,11 +166,13 @@ struct mobile_vit_layer {
         features = conv_kxk.forward(ctx, features, 1, true, true, false);
         features = conv_1x1.forward(ctx, features, 1, false, false, false);
 
-
+        // unfold the features to [OC, N_PATCHES, PATCH_AREA, 1]
         features = unfolding(ctx, features, patch_size);
 
         //transformer
-        //features = transformer.forward(ctx, features);
+        print_shape("features before folding: ", features);
+        features = transformer.forward(ctx, features, layer_norm_esp);
+        print_shape("features after folding: ", features);
         
         // layernorm  
 
@@ -306,7 +298,7 @@ void assign_weights(
     // read the transformer layers:
     layer.transformer.layers.resize(layer.num_stages);
     for (int i = 0; i < layer.num_stages; i++){
-        auto & transformer_layer = layer.transformer.layers[0]; 
+        auto & transformer_layer = layer.transformer.layers[i]; 
         assign_weights(transformer_layer, path + "/transformer/layer." + std::to_string(i), tensors);
     }
     // read the layernorm
@@ -416,17 +408,18 @@ void load_model_v2(mobilevit_model & model, std::string model_path){
             model.encoder.layer_3.hidden_size = hidden_size;
             model.encoder.layer_3.dilation = 1;
             model.encoder.layer_3.patch_size = model.hparams.patch_size;
+            model.encoder.layer_3.layer_norm_esp = model.hparams.layer_norm_eps;
 
             // inverted layer need to have their in_channels and out_channels set
             model.encoder.layer_3.downsampling_layer.in_channels = in_channels;
             model.encoder.layer_3.downsampling_layer.out_channels = out_channels;
             model.encoder.layer_3.downsampling_layer.strides = strides;
             
-            // settings parameters for transformer TODO
-//            model.encoder.layer_3.transformer.in_channels = ?
-//            model.encoder.layer_3.transformer.out_channels = ?
-//            model.encoder.layer_3.transformer.num_stages = ?
-//            model.encoder.layer_3.transformer.hidden_size = ?
+            // settings parameters for transformer
+            model.encoder.layer_3.transformer.num_stages = num_stages;
+            model.encoder.layer_3.transformer.hidden_size = hidden_size;
+            model.encoder.layer_3.transformer.num_head = model.hparams.num_attention_heads;
+            model.encoder.layer_3.transformer.layers.resize(num_stages); 
 
 
             assign_weights(
@@ -453,12 +446,20 @@ void load_model_v2(mobilevit_model & model, std::string model_path){
             model.encoder.layer_4.hidden_size = hidden_size;
             model.encoder.layer_4.dilation = 1;
             model.encoder.layer_4.patch_size = model.hparams.patch_size;
+            model.encoder.layer_4.layer_norm_esp = model.hparams.layer_norm_eps;
 
-        // inverted layer need to have their in_channels and out_channels set
+            // inverted layer need to have their in_channels and out_channels set
             model.encoder.layer_4.downsampling_layer.in_channels = in_channels;
             model.encoder.layer_4.downsampling_layer.out_channels = out_channels;
             model.encoder.layer_4.downsampling_layer.strides = strides;
      
+            // settings parameters for transformer
+            model.encoder.layer_4.transformer.num_stages = num_stages;
+            model.encoder.layer_4.transformer.hidden_size = hidden_size;
+            model.encoder.layer_4.transformer.num_head = model.hparams.num_attention_heads;
+            model.encoder.layer_4.transformer.layers.resize(num_stages); 
+
+
             assign_weights(
                 model.encoder.layer_4,
                 "tf_mobile_vi_t_model/mobilevit/encoder/layer.3",
@@ -482,12 +483,20 @@ void load_model_v2(mobilevit_model & model, std::string model_path){
             model.encoder.layer_5.hidden_size = hidden_size;
             model.encoder.layer_5.dilation = 1;
             model.encoder.layer_5.patch_size = model.hparams.patch_size;
+            model.encoder.layer_5.layer_norm_esp = model.hparams.layer_norm_eps;
 
             // inverted layer need to have their in_channels and out_channels set
             model.encoder.layer_5.downsampling_layer.in_channels = in_channels;
             model.encoder.layer_5.downsampling_layer.out_channels = out_channels;
             model.encoder.layer_5.downsampling_layer.strides = strides;
  
+            // settings parameters for transformer
+            model.encoder.layer_5.transformer.num_stages = num_stages;
+            model.encoder.layer_5.transformer.hidden_size = hidden_size;
+            model.encoder.layer_5.transformer.num_head = model.hparams.num_attention_heads;
+            model.encoder.layer_5.transformer.layers.resize(num_stages); 
+
+
 
             assign_weights(
                 model.encoder.layer_5,
@@ -915,3 +924,222 @@ void read_all_weights(mobilevit_model& model, std::ifstream &fin){
     }
 }
  
+void print_shape(std::string name, ggml_tensor* tensor){
+    std::cout << name << ": ";
+    if (tensor == NULL){
+        std::cout << "Tensor is empty" << std::endl;
+        return;
+    }
+
+    std::cout << "Dims: (";
+    int n_dims = ggml_n_dims(tensor);
+    for(int i = 0; i < n_dims; i++){
+        if(i != n_dims-1){
+            std::cout << tensor->ne[i] << ", ";   
+        } else{
+            std::cout << tensor->ne[i] << ")\n";   
+        }
+    }
+}
+
+
+ggml_tensor * mobilevit_transformer::forward(
+    ggml_context * ctx, ggml_tensor * inp, float layer_norm_eps
+){
+    for (int i = 0; i < num_stages; i++){
+        inp = layers[i].forward(ctx, inp, layer_norm_eps, num_head);
+    }
+    return inp;
+}
+
+
+ggml_tensor * transpose_for_score(ggml_context * ctx, ggml_tensor* inp, int num_head){
+    int batch_size  = 1;
+    int nc          = inp->ne[0];
+    int n_patches   = inp->ne[1];
+    int patch_area  = inp->ne[2];
+
+    GGML_ASSERT(nc % num_head == 0);
+    int attention_head_size = nc/num_head;
+    inp = ggml_reshape_4d(ctx, inp, attention_head_size, num_head, n_patches, batch_size * patch_area);
+    inp = ggml_permute(ctx, inp, 0, 2, 1, 3); 
+    return inp;
+}
+
+ggml_tensor * mobilevit_transformer_layer::forward(
+    ggml_context * ctx, ggml_tensor * hidden_states, float layer_norm_eps, int num_head
+){
+    // attention_output = self_attention(layernorm_before(hidden_states)    (1)
+    // hidden_states = attention_output + hidden_states                     (2)
+    // layer_output = layernorm_after(hidden_sizes)                         (3)
+    // layer_output = intermediate(layer_output)                            (4)
+    // layer_output = mobilevit_output(layer_output, hidden_states, training=training), (5)
+    
+    //layernorm before
+    int attention_head_size = hidden_states->ne[0]/num_head;
+
+    float scale = sqrt(1.0f*attention_head_size);
+
+    ggml_tensor * attention_inp = ggml_add(
+        ctx,
+        ggml_mul(
+            ctx,
+            ggml_norm(ctx, hidden_states, layer_norm_eps),
+            ggml_repeat(
+                ctx,
+                ggml_reshape_3d(ctx, lb_gamma, lb_gamma->ne[0], 1, 1),
+                hidden_states
+            )
+        ),
+        ggml_repeat(
+            ctx, 
+            ggml_reshape_3d(ctx, lb_beta, lb_beta->ne[0], 1, 1),
+            hidden_states
+        )
+    );
+    attention_inp = ggml_cont(ctx, attention_inp);
+
+    // key_layer
+    ggml_tensor * key_layer = ggml_mul_mat(ctx, attention_key_kernel, attention_inp);
+    key_layer = ggml_add(
+        ctx,
+        key_layer,
+        ggml_repeat(
+            ctx,
+            ggml_reshape_3d(ctx, attention_key_bias, attention_key_bias->ne[0], 1, 1),
+            key_layer
+        )
+    );
+    key_layer = transpose_for_score(ctx, key_layer, num_head);
+
+
+    // value_layer
+    ggml_tensor * value_layer = ggml_mul_mat(ctx, attention_value_kernel, attention_inp);
+    value_layer = ggml_add(
+        ctx,
+        value_layer,
+        ggml_repeat(
+            ctx,
+            ggml_reshape_3d(ctx, attention_value_bias, attention_value_bias->ne[0], 1, 1),
+            value_layer 
+        )
+    );
+    value_layer = transpose_for_score(ctx, value_layer, num_head);   
+
+    // query
+    ggml_tensor * query_layer = ggml_mul_mat(ctx, attention_query_kernel, attention_inp);
+    query_layer = ggml_add(
+        ctx,
+        query_layer,
+        ggml_repeat(
+            ctx,
+            ggml_reshape_3d(ctx, attention_query_bias, attention_query_bias->ne[0], 1, 1),
+            query_layer 
+        )
+    );
+    query_layer = transpose_for_score(ctx, query_layer, num_head);  // head_size,L, num_head, batch 
+
+    //Take the dot product between "query" and "key" to get the raw attention scores
+    ggml_tensor * attention_score = ggml_div(
+        ctx,
+        ggml_mul_mat(ctx,key_layer, query_layer),
+        ggml_new_f32(ctx, scale)
+    ); // L, L, num_head, batch
+
+    attention_score = ggml_soft_max(ctx, attention_score); // [L, L, num_head, batch 
+
+    //we need to transpose value_layer in order to be ggml_mul_mat 
+    ggml_tensor * context_layer = ggml_mul_mat(
+        ctx,
+        ggml_cont(ctx, ggml_permute(ctx, value_layer, 1, 0, 2, 3)),
+        attention_score
+    ); // head_size, L, num_head, B 
+
+    context_layer = ggml_permute(ctx, context_layer, 0, 2, 1, 3); // head_size, num_head, L, B
+    context_layer = ggml_reshape_3d(
+        ctx,
+        ggml_cont(ctx, context_layer),
+        hidden_states->ne[0], hidden_states->ne[1], hidden_states->ne[2]
+    ); // hidden_size, L, B
+
+    ggml_tensor * attention_output = ggml_mul_mat(ctx, attention_output_kernel, context_layer);
+    attention_output = ggml_add(
+        ctx,
+        attention_output,
+        ggml_repeat(
+            ctx,
+            ggml_reshape_3d(ctx, attention_output_bias, attention_output_bias->ne[0], 1, 1),
+            attention_output 
+        )
+    ); // hidden_states, L, B 
+
+    // step  2 hidden_states = hidden_states + attention_output
+    hidden_states = ggml_add(ctx, hidden_states, attention_output);
+
+    // step 3: layer_output = layernorm_after(hidden_sizes)                         (3)
+    ggml_tensor * layer_output = ggml_add(
+        ctx,
+        ggml_mul(
+            ctx,
+            ggml_norm(ctx, hidden_states, layer_norm_eps),
+            ggml_repeat(
+                ctx,
+                ggml_reshape_3d(ctx, la_gamma, la_gamma->ne[0], 1, 1),
+                hidden_states
+            )
+        ),
+        ggml_repeat(
+            ctx, 
+            ggml_reshape_3d(ctx, la_beta, la_beta->ne[0], 1, 1),
+            hidden_states
+        )
+    );
+    layer_output = ggml_cont(ctx, layer_output);
+    print_shape("layernorm after: ", layer_output);
+    print_shape("intermediate_kernel: ", intermediate_kernel);
+    // step 4:
+    // layer_output = intermediate(layer_output)                            (4)
+    layer_output = ggml_mul_mat(
+        ctx,
+        ggml_cont(ctx, ggml_transpose(ctx, intermediate_kernel)),
+        layer_output
+    ); 
+    layer_output = ggml_add(
+        ctx,
+        layer_output,
+        ggml_repeat(
+            ctx,
+            ggml_reshape_3d(ctx, intermediate_bias, intermediate_bias->ne[0], 1, 1),
+            layer_output 
+        )
+    );
+    print_shape("intermediate: ", layer_output);
+    layer_output = ggml_silu(ctx, layer_output);
+
+    // step 5:layer_output = mobilevit_output(layer_output, hidden_states, training=training), (5)
+    // In the implementaiton, layer_output is named to hidden_states. hidden_states is name in to input_tensor
+    layer_output = ggml_mul_mat(ctx,
+        ggml_cont(ctx, ggml_transpose(ctx, output_kernel)),
+        layer_output
+    ); 
+    layer_output = ggml_add(
+        ctx,
+        layer_output,
+        ggml_repeat(
+            ctx,
+            ggml_reshape_3d(ctx, output_bias, output_bias->ne[0], 1, 1),
+            layer_output 
+        )
+    );
+
+    layer_output = ggml_add(
+        ctx,
+        layer_output,
+        hidden_states
+    );
+
+ 
+
+
+    return layer_output;
+}
