@@ -498,9 +498,17 @@ void load_model_v2(mobilevit_model & model, std::string model_path){
                 model.tensors
             );
         }
-
-
     }
+
+    // read laye conv_1x1_exp
+    {
+        assign_weights(
+            model.conv_1x1_exp,
+            "tf_mobile_vi_t_model/mobilevit/conv_1x1_exp",
+            model.tensors
+        );
+    }
+
 }
 
 bool sam_image_load_from_file(
@@ -609,8 +617,11 @@ ggml_tensor * mobilevit_model::extract_features(sam_image_f32 & img){
     // call the encoder
     output = encoder.forward(ctx0, output);
 
+    // call the conv_1x1_exp
+    output = conv_1x1_exp.forward(ctx0, output, 1, true, true, false);
     print_shape("final output: ", output);
 
+    // set the image to the input
     float * data = (float *) ggml_get_data(inp);
     for(int k = 0; k < 3;k ++){
         for(int y =0; y < 256; y++){
