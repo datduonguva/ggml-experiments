@@ -16,6 +16,19 @@
 
 void print_shape(std::string name, ggml_tensor* tensor);
 
+struct sam_image_f32 {                                                                              
+    int nx;                                                                                         
+    int ny;                                                                                         
+                                                                                                    
+    std::vector<float> data;                                                                        
+}; 
+
+struct sam_image_u8 {
+    int nx, ny;
+    std::vector<uint8_t> data;
+};
+
+
 struct mobilevit_hparams {
     int num_channels = 3;
     int image_size = 256;
@@ -32,7 +45,7 @@ struct mobilevit_hparams {
     float attention_probs_dropout_prob = 0.0;
     float classifier_dropout_prob = 0.1;
     float initializer_range=0.02;
-    float layer_norm_eps = 1e-5;
+    float layer_norm_eps = 1.0e-5;
     bool qkv_bias = true;
 };
 
@@ -152,33 +165,12 @@ struct mobile_vit_layer {
     ggml_tensor * layernorm_beta;
     mobilevit_conv_layer conv_projection;
     mobilevit_conv_layer fusion;
-    // forward
 
     ggml_tensor * unfolding(ggml_context * ctx, ggml_tensor * features, int patch_size);
-    ggml_tensor * folding(ggml_context * ctx, ggml_tensor * features);
+    ggml_tensor * folding(ggml_context * ctx, ggml_tensor * features, int patch_size);
 
-    ggml_tensor * forward(
-        ggml_context * ctx, ggml_tensor * inp
-    ){
-        ggml_tensor * features = downsampling_layer.forward(ctx, inp);
-
-        // forward signature: ctx, inpt, stride, use_normalization, use_activation,  depthwise
-        features = conv_kxk.forward(ctx, features, 1, true, true, false);
-        features = conv_1x1.forward(ctx, features, 1, false, false, false);
-
-        // unfold the features to [OC, N_PATCHES, PATCH_AREA, 1]
-        features = unfolding(ctx, features, patch_size);
-
-        //transformer
-        print_shape("features before folding: ", features);
-        features = transformer.forward(ctx, features, layer_norm_esp);
-        print_shape("features after folding: ", features);
-        
-        // layernorm  
-
-        return features;
-    }
-
+    // forward
+    ggml_tensor * forward( ggml_context * ctx, ggml_tensor * inp);
 };
 
 struct mobilevit_encoder {
@@ -189,18 +181,17 @@ struct mobilevit_encoder {
     mobile_vit_layer layer_4;
     mobile_vit_layer layer_5;
 
-    ggml_tensor * forward(
-        ggml_context * ctx,
-        ggml_tensor * embedding
-    ){
-        std::cout << "-------->through layer_1\n";
+    ggml_tensor * forward(ggml_context * ctx, ggml_tensor * embedding){
+        std::cout << "----------->through layer_1\n";
         ggml_tensor * result = layer_1.forward(ctx, embedding);
-        std::cout << "-------->through layer_2\n";
+        std::cout << "----------->through layer_2\n";
         result = layer_2.forward(ctx, result);
-        std::cout << "-------->through layer_3\n";
+        std::cout << "----------->through layer_3\n";
         result = layer_3.forward(ctx, result);
-//        result = layer_4.forward(ctx, result);
-//        result = layer_5.forward(ctx, result);
+        std::cout << "----------->through layer_4\n";
+        result = layer_4.forward(ctx, result);
+        std::cout << "----------->through layer_5\n";
+        result = layer_5.forward(ctx, result);
         return result;
     }
 };
@@ -210,9 +201,12 @@ struct mobilevit_model {
 
     mobilevit_conv_layer conv_stem; 
     mobilevit_encoder encoder;  
+    mobilevit_conv_layer conv_1x1_exp;
 
     struct ggml_context * ctx_w;    // context for model's weights
     std::map<std::string, ggml_tensor *> tensors;
+
+    ggml_tensor * extract_features(sam_image_f32 & img);
 };
 
 int total_weights = 0;
@@ -509,18 +503,6 @@ void load_model_v2(mobilevit_model & model, std::string model_path){
     }
 }
 
-struct sam_image_f32 {                                                                              
-    int nx;                                                                                         
-    int ny;                                                                                         
-                                                                                                    
-    std::vector<float> data;                                                                        
-}; 
-
-struct sam_image_u8 {
-    int nx, ny;
-    std::vector<uint8_t> data;
-};
-
 bool sam_image_load_from_file(
     std::string &name,
     sam_image_u8 &img
@@ -608,11 +590,7 @@ bool sam_image_preprocess(const sam_image_u8 & img, sam_image_f32 & res) {
 }
 
 
-
-ggml_cgraph * encode_image(
-    mobilevit_model & model,
-    const sam_image_f32 & img
-){
+ggml_tensor * mobilevit_model::extract_features(sam_image_f32 & img){
     struct ggml_init_params params = { 1024* 1024 * 1024, NULL, false};
 
     ggml_context * ctx0 = ggml_init(params);
@@ -626,11 +604,12 @@ ggml_cgraph * encode_image(
     ggml_set_input(inp);
 
     // signature: ctx, inp, s, use_normalization, use_activation, depthwise
-    ggml_tensor * output = model.conv_stem.forward(ctx0, inp, 2, true, true,false ); // [128, 128, 16]
+    ggml_tensor * output = conv_stem.forward(ctx0, inp, 2, true, true,false ); // [128, 128, 16]
 
     // call the encoder
-    output = model.encoder.forward(ctx0, output);
+    output = encoder.forward(ctx0, output);
 
+    print_shape("final output: ", output);
 
     float * data = (float *) ggml_get_data(inp);
     for(int k = 0; k < 3;k ++){
@@ -641,9 +620,10 @@ ggml_cgraph * encode_image(
         }
     }
 
-
+    std::cout << "Before building grapth\n";
     ggml_build_forward_expand(gf, output);
 
+    std::cout << "after building grapth\n";
     for (int i = 0; i < 10; i++){
         auto t0 = ggml_time_us();
         ggml_graph_compute_with_ctx(ctx0, gf, 4);
@@ -651,7 +631,7 @@ ggml_cgraph * encode_image(
     }
     ggml_free(ctx0);
 
-    return gf;
+    return output;
 } 
 
 
@@ -689,7 +669,7 @@ int main(int argc, char ** argv) {
 
     const int64_t t_load_image = ggml_time_us();
     // calculate the graph
-    ggml_cgraph * gf = encode_image(model, img1);
+    ggml_tensor * gf = model.extract_features(img1);
 
 
     const int64_t t_encode = ggml_time_us();
@@ -735,12 +715,30 @@ ggml_tensor * mobile_vit_layer::unfolding(
     // step 4 resh[ae
     patches = ggml_reshape_4d(ctx, ggml_cont(ctx, patches), ps*ps, n_patch_w*n_patch_h, c, 1);
     // step 5 permute -> [c, n_patch_h*n_patch_w, ps*ps*1] // 3d matrix
-    patches = ggml_permute(ctx, patches, 2, 1, 0, 3);
+    patches = ggml_cont(ctx, ggml_permute(ctx, patches, 2, 1, 0, 3));
+
     print_shape("patches: ", patches);
     return patches;
 }
 
-ggml_tensor * mobile_vit_layer::folding(ggml_context * ctx, ggml_tensor * features){
+
+ggml_tensor * mobile_vit_layer::folding(ggml_context * ctx, ggml_tensor * features, int patch_size){
+    // features (C, n_patches, patch_area*batch) 
+    int c = features->ne[0];
+    int n_patches = features->ne[1];
+    int n_patch = (int) (sqrt(1.0*n_patches)); // assume image is a square, and patch is square
+    int patch_area = patch_size*patch_size;
+
+    features = ggml_reshape_4d(ctx, features, c, n_patches, patch_area, 1); // (c, n_patches, ps*ps,  1)
+    features = ggml_cont(ctx, ggml_permute(ctx, features, 2, 1, 0, 3));  // (ps*ps, n_patches, c, batch)
+    features = ggml_reshape_4d(ctx, features, patch_size, patch_size, n_patch, n_patch*c*1);
+    features = ggml_cont(
+        ctx,
+        ggml_permute(ctx, features, 0, 2, 1, 3)
+    ); // (patch_size, n_patch, patch_size, n_patch*c*1) 
+    features = ggml_reshape_4d(ctx, features, patch_size*n_patch, patch_size*n_patch, c, 1);
+
+
     return features;
 }
 
@@ -974,12 +972,15 @@ ggml_tensor * mobilevit_transformer_layer::forward(
     // layer_output = layernorm_after(hidden_sizes)                         (3)
     // layer_output = intermediate(layer_output)                            (4)
     // layer_output = mobilevit_output(layer_output, hidden_states, training=training), (5)
-    
-    //layernorm before
+    std::cout << "------------>transformer_layer_forward\n";
+    print_shape("hidden_states: ", hidden_states);
+    std::cout << hidden_states->nb[0] << "\n";
     int attention_head_size = hidden_states->ne[0]/num_head;
 
     float scale = sqrt(1.0f*attention_head_size);
 
+    //layernorm before
+    GGML_ASSERT(hidden_states->nb[0] == sizeof(float));
     ggml_tensor * attention_inp = ggml_add(
         ctx,
         ggml_mul(
@@ -1096,7 +1097,6 @@ ggml_tensor * mobilevit_transformer_layer::forward(
     );
     layer_output = ggml_cont(ctx, layer_output);
     print_shape("layernorm after: ", layer_output);
-    print_shape("intermediate_kernel: ", intermediate_kernel);
     // step 4:
     // layer_output = intermediate(layer_output)                            (4)
     layer_output = ggml_mul_mat(
@@ -1138,8 +1138,61 @@ ggml_tensor * mobilevit_transformer_layer::forward(
         hidden_states
     );
 
- 
-
-
     return layer_output;
 }
+
+ggml_tensor * mobile_vit_layer::forward(ggml_context * ctx, ggml_tensor * inp){
+        ggml_tensor * features = downsampling_layer.forward(ctx, inp);
+        ggml_tensor * residual = features;
+
+        // forward signature: ctx, inpt, stride, use_normalization, use_activation,  depthwise
+        features = conv_kxk.forward(ctx, features, 1, true, true, false);
+        features = conv_1x1.forward(ctx, features, 1, false, false, false);
+
+        // unfold the features to [OC, N_PATCHES, PATCH_AREA, 1]
+        features = unfolding(ctx, features, patch_size);
+
+        //transformer
+        print_shape("features before folding: ", features);
+        features = transformer.forward(ctx, features, layer_norm_esp);
+        print_shape("features after folding: ", features);
+        
+        // layernorm  
+        features = ggml_add(
+            ctx,
+            ggml_mul(
+                ctx,
+                ggml_norm(ctx, features, layer_norm_esp),
+                ggml_repeat(
+                    ctx,
+                    ggml_reshape_3d(ctx, layernorm_alpha, layernorm_alpha->ne[0], 1, 1),
+                    features 
+                )
+            ),
+            ggml_repeat(
+                ctx, 
+                ggml_reshape_3d(ctx, layernorm_beta, layernorm_beta->ne[0], 1, 1),
+                features 
+            )
+        );
+        features = ggml_cont(ctx, features);
+        print_shape("features after layernorm: ", features);
+    
+        // folding
+        features = folding(ctx, features, patch_size);
+        print_shape("features after folding: ", features);
+
+        // forward signature: ctx, inpt, stride, use_normalization, use_activation,  depthwise
+        features = conv_projection.forward(ctx, features, 1, true, true, false);
+        print_shape("features after projection: ", features);
+
+        features = fusion.forward(
+            ctx,
+            ggml_concat(ctx, residual, features),
+            1, true, true, false
+        );
+        print_shape("features after fusion: ", features);
+        return features;
+    }
+
+
