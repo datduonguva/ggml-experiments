@@ -15,6 +15,7 @@
 
 
 void print_shape(std::string name, ggml_tensor* tensor);
+void print_first_row(ggml_tensor* tensor);
 
 struct sam_image_f32 {                                                                              
     int nx;                                                                                         
@@ -67,7 +68,6 @@ struct mobilevit_conv_layer {
         bool use_activation=true,
         bool depthwise=false
     );
- 
 };
 
 struct inverted_residual_layer {
@@ -95,6 +95,7 @@ struct mobile_net_layer {
     ggml_tensor * forward(
         ggml_context * ctx, ggml_tensor * inp
     ){
+        std::cout << "mobile_net_layer\n";
         for (int i = 0; i < num_stages; i++){
             inp = residual_layers[i].forward(ctx, inp);
         }
@@ -619,7 +620,6 @@ ggml_tensor * mobilevit_model::extract_features(sam_image_f32 & img){
 
     // call the conv_1x1_exp
     output = conv_1x1_exp.forward(ctx0, output, 1, true, true, false);
-    print_shape("final output: ", output);
 
     // set the image to the input
     float * data = (float *) ggml_get_data(inp);
@@ -631,16 +631,14 @@ ggml_tensor * mobilevit_model::extract_features(sam_image_f32 & img){
         }
     }
 
-    std::cout << "Before building grapth\n";
     ggml_build_forward_expand(gf, output);
 
-    std::cout << "after building grapth\n";
-    for (int i = 0; i < 10; i++){
+    for (int i = 0; i < 1; i++){
         auto t0 = ggml_time_us();
-        ggml_graph_compute_with_ctx(ctx0, gf, 4);
+        ggml_graph_compute_with_ctx(ctx0, gf, 1);
         std::cout << "end compute: " << (ggml_time_us() - t0)/1000.f << " (ms)\n";
     }
-    ggml_free(ctx0);
+//    ggml_free(ctx0);
 
     return output;
 } 
@@ -675,17 +673,30 @@ int main(int argc, char ** argv) {
     }
     std::cout << "Size: "<< img0.nx << ", " << img0.ny << ", " << img0.data.size() << std::endl;
 
-    const int64_t t0 = ggml_time_us();
     sam_image_preprocess(img0, img1);
+
+    // test case 1
+    for (int y = 0; y < 256; y++){
+        for(int x = 0; x < 256; x++){
+            for(int c = 0; c < 3; c++){
+                img1.data[y*256*3 +x*3 + c] = (float) (((y*256*3 + x * 3 + c) % 256)/255.0);
+            }
+        }
+        
+    }
+    const int64_t t0 = ggml_time_us();
 
     const int64_t t_load_image = ggml_time_us();
     // calculate the graph
-    ggml_tensor * gf = model.extract_features(img1);
+    ggml_tensor * output_embedding = model.extract_features(img1);
+
 
 
     const int64_t t_encode = ggml_time_us();
     std::cout << "load: " << (t_load_image - t0)/1000.f << "foward: " << (t_encode - t_load_image)/1000.f << "\n";
     ggml_free(model.ctx_w);
+
+    print_first_row(output_embedding);
 
     return 0;
 }
@@ -728,7 +739,6 @@ ggml_tensor * mobile_vit_layer::unfolding(
     // step 5 permute -> [c, n_patch_h*n_patch_w, ps*ps*1] // 3d matrix
     patches = ggml_cont(ctx, ggml_permute(ctx, patches, 2, 1, 0, 3));
 
-    print_shape("patches: ", patches);
     return patches;
 }
 
@@ -762,10 +772,7 @@ struct ggml_tensor * mobilevit_conv_layer::forward(
     bool use_activation,
     bool depthwise
 ){
-    std::cout <<"mobilevit_conv_layer.forward\n";
-    print_shape("kernel: ", kernel);
-    print_shape("input: ", input);
-
+    std::cout << "      mobilevit_conv_layer\n"; 
     int oc = kernel->ne[0];
     int ic = kernel->ne[1];
     int kw = kernel->ne[2];
@@ -774,7 +781,6 @@ struct ggml_tensor * mobilevit_conv_layer::forward(
     struct ggml_tensor * output;
 
     if (depthwise){
-        std::cout << "in depthwise\n";
         output = ggml_conv_depthwise_2d(
             ctx,
             ggml_cont_4d(
@@ -784,7 +790,6 @@ struct ggml_tensor * mobilevit_conv_layer::forward(
             ),
             input, s, s, padding, padding, 1, 1 // s0, s1, p0, p1, d0, d1
         );
-        std::cout << "done depthwise\n";
     } else{
         output = ggml_conv_2d(
             ctx,
@@ -797,7 +802,6 @@ struct ggml_tensor * mobilevit_conv_layer::forward(
         );
     }
 
-    print_shape("output: ", output);
     if (use_normalization){
         output = ggml_sub(
             ctx,
@@ -815,10 +819,14 @@ struct ggml_tensor * mobilevit_conv_layer::forward(
             output,
             ggml_sqrt(
                 ctx,
-                ggml_repeat(
+                ggml_add(
                     ctx,
-                    ggml_cont_4d(ctx, moving_variance, 1, 1, moving_variance->ne[0], 1),
-                    output
+                    ggml_repeat(
+                        ctx,
+                        ggml_cont_4d(ctx, moving_variance, 1, 1, moving_variance->ne[0], 1),
+                        output
+                    ),
+                    ggml_new_f32(ctx, 1.0e-5)
                 )
             )
         );
@@ -844,15 +852,12 @@ ggml_tensor * inverted_residual_layer::forward(
 ){
     ggml_tensor * features = inp; 
 
-    std::cout << "inverted_residual_layer\n"; 
-    std::cout << "  before expanding\n";
+    std::cout << "  inverted_residual_layer\n"; 
 
     // forward signature: ctx, inpt, stride, use_normalization, use_activation,  depthwise
     features = expand_1x1.forward(ctx, features, 1, true, true, false); 
-    std::cout << "  before conv3x3\n";
     features = conv_3x3.forward(ctx, features, strides, true, true, true);
-    std::cout << "  before reducing\n";
-    features = reduce_1x1.forward(ctx, features, 1, true, true, false);
+    features = reduce_1x1.forward(ctx, features, 1, true, false, false);
 
     if (strides == 1 && in_channels == out_channels){
         features = ggml_add(ctx, features, inp);
@@ -876,7 +881,6 @@ void read_all_weights(mobilevit_model& model, std::ifstream &fin){
 
         // if the string contstrain convolution, change the datatypes to f32
         if (name.find("convolution") != std::string::npos){
-            std::cout << " I am here\n";
             is_f16 = true;
         }
 
@@ -955,7 +959,9 @@ void print_shape(std::string name, ggml_tensor* tensor){
 ggml_tensor * mobilevit_transformer::forward(
     ggml_context * ctx, ggml_tensor * inp, float layer_norm_eps
 ){
+    std::cout << "  mobilevit_transformer\n";
     for (int i = 0; i < num_stages; i++){
+
         inp = layers[i].forward(ctx, inp, layer_norm_eps, num_head);
     }
     return inp;
@@ -983,15 +989,12 @@ ggml_tensor * mobilevit_transformer_layer::forward(
     // layer_output = layernorm_after(hidden_sizes)                         (3)
     // layer_output = intermediate(layer_output)                            (4)
     // layer_output = mobilevit_output(layer_output, hidden_states, training=training), (5)
-    std::cout << "------------>transformer_layer_forward\n";
-    print_shape("hidden_states: ", hidden_states);
-    std::cout << hidden_states->nb[0] << "\n";
+    std::cout << "    transformer_layer_forward\n";
     int attention_head_size = hidden_states->ne[0]/num_head;
 
     float scale = sqrt(1.0f*attention_head_size);
 
     //layernorm before
-    GGML_ASSERT(hidden_states->nb[0] == sizeof(float));
     ggml_tensor * attention_inp = ggml_add(
         ctx,
         ggml_mul(
@@ -1011,8 +1014,12 @@ ggml_tensor * mobilevit_transformer_layer::forward(
     );
     attention_inp = ggml_cont(ctx, attention_inp);
 
-    // key_layer
-    ggml_tensor * key_layer = ggml_mul_mat(ctx, attention_key_kernel, attention_inp);
+    // key_layer (Nout, Nin), (Nin, W
+    ggml_tensor * key_layer = ggml_mul_mat(
+        ctx,
+        ggml_cont(ctx, ggml_permute(ctx, attention_key_kernel, 1, 0, 2, 3)),
+        attention_inp
+    );
     key_layer = ggml_add(
         ctx,
         key_layer,
@@ -1024,9 +1031,12 @@ ggml_tensor * mobilevit_transformer_layer::forward(
     );
     key_layer = transpose_for_score(ctx, key_layer, num_head);
 
-
     // value_layer
-    ggml_tensor * value_layer = ggml_mul_mat(ctx, attention_value_kernel, attention_inp);
+    ggml_tensor * value_layer = ggml_mul_mat(
+        ctx,
+        ggml_cont(ctx, ggml_permute(ctx, attention_value_kernel, 1, 0 , 2, 3)),
+        attention_inp
+    );
     value_layer = ggml_add(
         ctx,
         value_layer,
@@ -1039,7 +1049,11 @@ ggml_tensor * mobilevit_transformer_layer::forward(
     value_layer = transpose_for_score(ctx, value_layer, num_head);   
 
     // query
-    ggml_tensor * query_layer = ggml_mul_mat(ctx, attention_query_kernel, attention_inp);
+    ggml_tensor * query_layer = ggml_mul_mat(
+        ctx,
+        ggml_cont(ctx, ggml_permute(ctx, attention_query_kernel, 1, 0, 2, 3)),
+        attention_inp
+    );
     query_layer = ggml_add(
         ctx,
         query_layer,
@@ -1074,7 +1088,11 @@ ggml_tensor * mobilevit_transformer_layer::forward(
         hidden_states->ne[0], hidden_states->ne[1], hidden_states->ne[2]
     ); // hidden_size, L, B
 
-    ggml_tensor * attention_output = ggml_mul_mat(ctx, attention_output_kernel, context_layer);
+    ggml_tensor * attention_output = ggml_mul_mat(
+        ctx,
+        ggml_cont(ctx, ggml_permute(ctx, attention_output_kernel, 1, 0, 2, 3)),
+        context_layer
+    );
     attention_output = ggml_add(
         ctx,
         attention_output,
@@ -1107,7 +1125,6 @@ ggml_tensor * mobilevit_transformer_layer::forward(
         )
     );
     layer_output = ggml_cont(ctx, layer_output);
-    print_shape("layernorm after: ", layer_output);
     // step 4:
     // layer_output = intermediate(layer_output)                            (4)
     layer_output = ggml_mul_mat(
@@ -1124,9 +1141,7 @@ ggml_tensor * mobilevit_transformer_layer::forward(
             layer_output 
         )
     );
-    print_shape("intermediate: ", layer_output);
     layer_output = ggml_silu(ctx, layer_output);
-
     // step 5:layer_output = mobilevit_output(layer_output, hidden_states, training=training), (5)
     // In the implementaiton, layer_output is named to hidden_states. hidden_states is name in to input_tensor
     layer_output = ggml_mul_mat(ctx,
@@ -1153,57 +1168,65 @@ ggml_tensor * mobilevit_transformer_layer::forward(
 }
 
 ggml_tensor * mobile_vit_layer::forward(ggml_context * ctx, ggml_tensor * inp){
-        ggml_tensor * features = downsampling_layer.forward(ctx, inp);
-        ggml_tensor * residual = features;
+    std::cout << "mobile_vit_layer\n";
 
-        // forward signature: ctx, inpt, stride, use_normalization, use_activation,  depthwise
-        features = conv_kxk.forward(ctx, features, 1, true, true, false);
-        features = conv_1x1.forward(ctx, features, 1, false, false, false);
+    ggml_tensor * features = downsampling_layer.forward(ctx, inp);
 
-        // unfold the features to [OC, N_PATCHES, PATCH_AREA, 1]
-        features = unfolding(ctx, features, patch_size);
+    ggml_tensor * residual = features;
 
-        //transformer
-        print_shape("features before folding: ", features);
-        features = transformer.forward(ctx, features, layer_norm_esp);
-        print_shape("features after folding: ", features);
-        
-        // layernorm  
-        features = ggml_add(
+    // forward signature: ctx, inpt, stride, use_normalization, use_activation,  depthwise
+    features = conv_kxk.forward(ctx, features, 1, true, true, false);
+    features = conv_1x1.forward(ctx, features, 1, false, false, false);
+
+    // unfold the features to [OC, N_PATCHES, PATCH_AREA, 1]
+    features = unfolding(ctx, features, patch_size);
+
+    //transformer
+    features = transformer.forward(ctx, features, layer_norm_esp);
+    
+    // layernorm  
+    features = ggml_add(
+        ctx,
+        ggml_mul(
             ctx,
-            ggml_mul(
-                ctx,
-                ggml_norm(ctx, features, layer_norm_esp),
-                ggml_repeat(
-                    ctx,
-                    ggml_reshape_3d(ctx, layernorm_alpha, layernorm_alpha->ne[0], 1, 1),
-                    features 
-                )
-            ),
+            ggml_norm(ctx, features, layer_norm_esp),
             ggml_repeat(
-                ctx, 
-                ggml_reshape_3d(ctx, layernorm_beta, layernorm_beta->ne[0], 1, 1),
+                ctx,
+                ggml_reshape_3d(ctx, layernorm_alpha, layernorm_alpha->ne[0], 1, 1),
                 features 
             )
-        );
-        features = ggml_cont(ctx, features);
-        print_shape("features after layernorm: ", features);
-    
-        // folding
-        features = folding(ctx, features, patch_size);
-        print_shape("features after folding: ", features);
+        ),
+        ggml_repeat(
+            ctx, 
+            ggml_reshape_3d(ctx, layernorm_beta, layernorm_beta->ne[0], 1, 1),
+            features 
+        )
+    );
+    features = ggml_cont(ctx, features);
 
-        // forward signature: ctx, inpt, stride, use_normalization, use_activation,  depthwise
-        features = conv_projection.forward(ctx, features, 1, true, true, false);
-        print_shape("features after projection: ", features);
+    // folding
+    features = folding(ctx, features, patch_size);
 
-        features = fusion.forward(
-            ctx,
-            ggml_concat(ctx, residual, features),
-            1, true, true, false
-        );
-        print_shape("features after fusion: ", features);
-        return features;
+    // forward signature: ctx, inpt, stride, use_normalization, use_activation,  depthwise
+    features = conv_projection.forward(ctx, features, 1, true, true, false);
+
+    features = fusion.forward(
+        ctx,
+        ggml_concat(ctx, residual, features),
+        1, true, true, false
+    );
+    return features;
+}
+
+
+void print_first_row(ggml_tensor * tensor){
+    print_shape("output embedding: ", tensor);
+    int n = tensor->ne[0];
+
+    float * data = (float *) ggml_get_data(tensor);
+    for(int i = 0; i < n; i++){
+        if (i%5 == 0) std::cout << "\n";
+        std::cout << data[i] << ", ";
     }
-
-
+    std::cout << "\n";
+}
