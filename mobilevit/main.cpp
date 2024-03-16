@@ -15,7 +15,9 @@
 
 
 void print_shape(std::string name, ggml_tensor* tensor);
-void print_first_row(ggml_tensor* tensor);
+
+// print the first and last n_e elements on dimension 2,  dim 0 is at index i0, dim 1 is at index i2
+void print_features_d2(ggml_tensor* tensor, int i0, int i1, int n_e);
 
 struct sam_image_f32 {                                                                              
     int nx;                                                                                         
@@ -696,7 +698,9 @@ int main(int argc, char ** argv) {
     std::cout << "load: " << (t_load_image - t0)/1000.f << "foward: " << (t_encode - t_load_image)/1000.f << "\n";
     ggml_free(model.ctx_w);
 
-    print_first_row(output_embedding);
+    print_shape("output feature shape: ", output_embedding);
+    std::cout << "features of the test image: \n" ;
+    print_features_d2(output_embedding, 0, 0, 5);
 
     return 0;
 }
@@ -1218,15 +1222,23 @@ ggml_tensor * mobile_vit_layer::forward(ggml_context * ctx, ggml_tensor * inp){
     return features;
 }
 
-
-void print_first_row(ggml_tensor * tensor){
-    print_shape("output embedding: ", tensor);
-    int n = tensor->ne[0];
+void print_features_d2(ggml_tensor * tensor, int i0, int i1, int n_e){
+    int n0 = tensor->ne[0];
+    int n1 = tensor->ne[1];
+    int n2 = tensor->ne[2];
 
     float * data = (float *) ggml_get_data(tensor);
-    for(int i = 0; i < n; i++){
-        if (i%5 == 0) std::cout << "\n";
-        std::cout << data[i] << ", ";
+
+    std::cout << "i0 = " << i0 << ", i1 = " << i1 << "\n";
+
+    for(int i2 = 0 ; i2 < n_e; i2++){
+        std::cout << data[i0 + i1*n0 + i2*n0*n1] << ", ";
     }
+
+    std::cout << "...";
+    for(int i2 = n2 - n_e ; i2 < n2; i2++){
+        std::cout << data[i0 + i1*n0 + i2*n0*n1] << ", ";
+    }
+
     std::cout << "\n";
 }
