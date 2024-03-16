@@ -96,7 +96,7 @@ void print_text(vector<int> ids){
 }
 struct rnn_generator load_model(){
     struct ggml_init_params params = {
-        .mem_size = 128 * 1024 * 1024,
+        .mem_size = 64 * 1024 * 1024,
         .mem_buffer = NULL,
         .no_alloc = false
     };
@@ -269,7 +269,7 @@ void inference(
 ){
     // create the context holding the variables 
     struct ggml_init_params params = {
-        .mem_size = 512 * 1024 * 1024,
+        .mem_size = 1 * 1024 * 1024,
         .mem_buffer = NULL,
         .no_alloc = false
     };
@@ -309,7 +309,6 @@ void inference(
             );
         }
         ggml_graph_compute_with_ctx(ctx0, &gf, 1);
-
         char_index = argmax_1d(output.output);
     }
 }
