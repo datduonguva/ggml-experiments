@@ -1,10 +1,16 @@
 import tensorflow as tf
 
 
+def stable_softmax(logits, axis=None, name=None):
+    return tf.nn.softmax(logits=logits + 1e-9, axis=axis, name=name)
+
+
 class Config:
     n_head = 4
     # Todo: adding this
     initializer_range = None
+
+    output_attentions = False
 
 
 class TFConv1D(tf.keras.layers.Layer):
@@ -104,11 +110,60 @@ class TFAttention(tf.keras.layers.Layer):
         x = tf.reshape(
             x,
             [x_shape[0], x_shape[1], self.n_head, x_shape[-1]/self.n_head]
-        )
+        )   # (batch, length, n_head, head_size)
 
         x = tf.transpose(x, (0, 2, 1, 3)) # (batch, n_head, length, head_size)
 
         return x
+
+
+    def _attn(
+        self, q, k, v, attention_mask, head_mask, output_attentions,
+        training=False
+    ):
+        # q, k, v are after split -> (batch, n_head, length, features)
+        w = tf.matmul(q, k, transpose_b=True)
+        if self.scale:
+            dk = tf.cast(tf.shape(k)[-1], dtype=w.dtype)
+            w = w / tf.math.sqrt(dk)
+
+        # not using cross attention
+        if attention_mask is not None:
+            attention_mask = tf.cast(attention_mask, w.dtype)
+            w = w + attention_mask 
+
+        w = stable_softmax(logits=w, axis=-1)
+        w = self.attn_dropout(w, training=training)
+
+        if head_mask is not None:
+            w = w*head_mask
+
+        output = [tf.matmul(w, v)]
+
+        if output_attentions:
+            outputs.append(w)
+        return outputs
+
+
+    def merge_heads(self, x):
+        """
+        x has shape (batch, n_heads, length, features)
+        """
+
+
+        x = tf.transpose(x, [0, 2, 1, 3])
+        current_shape = tf.shape(x)
+        x = tf.reshape(
+            x,
+            [
+                current_shape[0],
+                current_shape[1],
+                current_shape[2]current_shape[3]
+            ]
+        )
+        return x
+
+
     def call(
         self,
         x,
@@ -157,3 +212,14 @@ class TFAttention(tf.keras.layers.Layer):
         outputs = [a, present] + attn_outputs[1:]
 
         return outputs # (a, present) + attentions
+
+
+
+
+class TFGPT2(tf.keras.models.Model):
+    def __int__(self, config, *inputs, **kwargs):
+        super().__init__(*inputs, **kwargs)
+
+        self.config = config.
+        self.output_attentions = config.output_attentions
+
