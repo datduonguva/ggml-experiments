@@ -7,6 +7,11 @@ def stable_softmax(logits, axis=None, name=None):
 
 class Config:
     n_head = 4
+    n_layers = 4
+    n_embedding = 512
+    hidden_size = 512  # Same with n_embedding ? need verify
+    n_positions = None
+    layer_norm_epsilon = 1e-5
     # Todo: adding this
     initializer_range = None
 
@@ -35,7 +40,9 @@ class TFConv1D(tf.keras.layers.Layer):
         self.weight = self.add_weight(
             "weight",
             shape=[self.nx, self.nf],
-            initializer=get_initializer(self.initializer_range),
+            initializer=tf.keras.initializers.TruncatedNormal(
+                stddev=self.initializer_range
+            ),
         )
         self.bias = self.add_weight(
             "bias", shape=[1, self.nf], initializer=tf.zeros_initializer()
@@ -220,6 +227,42 @@ class TFGPT2(tf.keras.models.Model):
     def __int__(self, config, *inputs, **kwargs):
         super().__init__(*inputs, **kwargs)
 
-        self.config = config.
+        self.config = config
         self.output_attentions = config.output_attentions
+        self.output_hidden_states = config.output_hidden_states
+        self.use_cache = False  # default to False for now
+        self.num_hidden_layers = config.n_layers
+        self.n_embd = config.n_embd
+        self.n_positions = config.n_positions
+        self.initializer_range = config.initializer_range
 
+        # word token embedding
+        self.wpe = tf.keras.layers.Embedding(
+            input_dim=config.vocab_size,
+            output_dim=config.hidden_size,
+            embeddings_initializer=tf.keras.initializers.TruncatedNormal(
+                config.initializer_range
+            ),
+            name="wte",
+        )
+       
+        # word position embedding 
+        self.wpe = tf.keras.layers.Embedding(
+            input_dim=config.n_positions,
+            output_dim=config.n_embd,
+            embeddings_initializer=tf.keras.initializers.TruncatedNormal(
+                config.initializer_range
+            ),
+            name="wpe",
+        )
+
+        self.drop = tf.keras.layers.Drop(config.embd_drop)
+        self.h = [
+            TFBlock(config, scale=True, name=f"h_._{i}")
+            for i in range(config.n_layers)
+        ]
+
+        self.ln_f = tf.keras.layers.LayerNormalization(
+            epsilon=config.layer_norm_epsilon, name="ln_f"
+        )
+        self.embed_dim = config.hidden_size
