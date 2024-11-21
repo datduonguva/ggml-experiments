@@ -266,3 +266,57 @@ class TFGPT2(tf.keras.models.Model):
             epsilon=config.layer_norm_epsilon, name="ln_f"
         )
         self.embed_dim = config.hidden_size
+
+    def call(self, 
+        input_ids,
+        past_key_values=None,
+        attention_mask=None,
+        token_type_ids=None,
+        position_ids=None,
+        head_mask=None,
+        use_cache=False,
+        output_attentions=False,
+        output_hidden_states=False,
+        return_dict=True,
+        training=False
+    ):
+        input_shape = tf.shape(input_ids)
+        input_ids = tf.reshape(
+            input_ids,
+            [-1, input_shape[-1]]
+        )
+
+
+        if past_key_values is None:
+            past_length = 0
+            past_key_values = [None]*len(self.h)
+        else:
+            past_length = tf.shape(
+                past_key_values[0][0]
+            )[-2]
+
+        if position_ids is None:
+            position_ids = tf.expand_dims(
+                tf.range(past_length, input_shape[-1] + past_length),
+                axis=0
+            )
+
+        if attention_mask is not None
+            shape = tf.shape(attention_mask)
+            attention_mask = tf.reshape(
+                attention_mask,
+                [shape[0], 1, 1, shape[1]]
+            )
+            one_cst = tf.constant(1.0)
+            attention_mask = tf.cast(attention_mask, dtype=one_cst.dtype)
+            attention_mask = tf.multily(
+                tf.subtract(one_cst, attention_mask)
+                tf.constant(-10000)
+            )
+
+        position_ids = tf.reshape(
+            position_ids, 
+            [-1, tf.shape(position_ids)[-1]]
+        )
+
+
