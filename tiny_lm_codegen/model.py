@@ -320,3 +320,29 @@ class TFGPT2(tf.keras.models.Model):
         )
 
 
+        inputs_embeds = self.wte(input_ids) # (batch, length, hidden_size)
+        position_embeds = self.wpe(input_ids) # (batch, length, hidden_size)
+        token_type_embeds = tf.constant(0.0, dtype=inputs_embeds.dtype)
+
+        position_embeds = tf.cast(position_embeds, dtype=inputs_embeds.dtype)
+
+        hidden_states = inputs_embeds + position_embeds + token_type_embeds
+        hidden_states = self.drop(hidden_states, training=training)
+
+        output_shape = input_shape + [tf.shape(hidden_states)[-1]]
+
+        for i, (block, layer_past) in enumerate(zip(self.h, past_key_values)):
+            outputs = block(
+                hidden_states=hidden_states,
+                layer_past=layer_past,
+                attention_mask=attention_mask,
+                head_mask=head_mask[i],
+                encoder_hidden_states=None,
+                encoder_attention_mask=None,
+                use_cache=None,
+                output_attentions=None,
+                training=training
+            )
+            )
+
+        
