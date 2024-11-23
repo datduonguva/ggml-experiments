@@ -5,7 +5,7 @@ def stable_softmax(logits, axis=None, name=None):
     return tf.nn.softmax(logits=logits + 1e-9, axis=axis, name=name)
 
 
-class Config:
+class GPT2Config:
     n_head = 4
     n_layers = 4
     n_embedding = 512
@@ -13,10 +13,16 @@ class Config:
     n_positions = None
     layer_norm_epsilon = 1e-5
     # Todo: adding this
-    initializer_range = None
-
     output_attentions = False
 
+    resid_pdrop = 0.1
+    embd_pdrop = 0.1
+    attn_pdrop = 0.1
+    layer_norm_epsilon = 1e-05
+    initializer_range = 0.02
+    use_cache = False
+    bos_token_id = 50256
+    eos_token_id = 50256
 
 class TFConv1D(tf.keras.layers.Layer):
     """
@@ -165,7 +171,8 @@ class TFAttention(tf.keras.layers.Layer):
             [
                 current_shape[0],
                 current_shape[1],
-                current_shape[2]current_shape[3]
+                current_shape[2],
+                current_shape[3]
             ]
         )
         return x
@@ -301,7 +308,7 @@ class TFGPT2(tf.keras.models.Model):
                 axis=0
             )
 
-        if attention_mask is not None
+        if attention_mask is not None:
             shape = tf.shape(attention_mask)
             attention_mask = tf.reshape(
                 attention_mask,
@@ -310,7 +317,7 @@ class TFGPT2(tf.keras.models.Model):
             one_cst = tf.constant(1.0)
             attention_mask = tf.cast(attention_mask, dtype=one_cst.dtype)
             attention_mask = tf.multily(
-                tf.subtract(one_cst, attention_mask)
+                tf.subtract(one_cst, attention_mask),
                 tf.constant(-10000)
             )
 
@@ -343,6 +350,103 @@ class TFGPT2(tf.keras.models.Model):
                 output_attentions=None,
                 training=training
             )
-            )
 
+            hidden_states, present = outputs[:2]
+
+        hidden_states = self.ln_f(hidden_states)
+        hidden_states = tf.reshape(hidden_states, output_shape)
+
+
+        return hidden_states
+
+
+    def build(self, input_shape=None):
+        """
+        The build method helps make the models 
+        """
+        if self.built:
+            return 
+        self.built = True
         
+        if getattr(self, "wte", None) is not None:
+            with tf.name_scope(self.wte.name):
+                self.wte.build(None)
+
+        if getattr(self, "wpe", None) is not None:
+            with tf.name_scope(self.wpe.name):
+                self.wpe.build(None)
+
+        if getattr(self, "ln_f", None) is not None:
+            with tf.name_scope(self.ln_f.name):
+                self.ln_f.build([None, None, self.embedding_size])
+        if getattr(self, "h", None) is not None:
+            for layer in self.h:
+                with tf.name_scope(layer.name):
+                    layer.build(None)
+
+class TFGPT2LMHeadModel(tf.keras.models.Model):
+    def __init__(self, config, *inputs, **kwargs):
+        super().__init__(config, *inputs, **kwargs)
+        self.transformer = TFGPT2(config, name="transformer")
+        
+    
+    def hf_compute_loss(self, labels, logits):
+        loss_fn = tf.keras.losses.SparseCategoricalCrossentropy(
+            from_logits=True,
+            reduction=keras.losses.Reduction.NONE
+        )
+
+        # Clip negative labels to zero here to avoid NaNs and errors - 
+        # those positions will get masked later anyway
+        unmasked_loss = loss_fn(tf.nn.relu(labels), logits)
+        # make sure only labels that are not equal to -100 affect the loss
+        loss_mask = tf.cast(labels != -100, dtype=unmasked_loss.dtype)
+        masked_loss = unmasked_loss * loss_mask
+        reduced_masked_loss = tf.reduce_sum(masked_loss) / tf.reduce_sum(loss_mask)
+        return tf.reshape(reduced_masked_loss, (1,))
+
+
+    def call(
+        self,
+        input_ids,
+        past_key_values,
+        attention_mask,
+        token_type_ids,
+        position_ids,
+        use_cache,
+        labels=None,
+        training=False
+    ):
+        transformer_outputs = self.transformer(
+            input_ids=input_ids,
+            past_key_values=past_key_values,
+            attention_mask=attention_mask,
+            token_type_ids=token_type_ids,
+            position_ids=position_ids,
+            head_mask=None,
+            use_cache=False,
+            output_attentions=False,
+            output_hidden_states=False,
+            return_dict=True,
+            training=training
+        ) 
+
+        hidden_states = transformer_outputs[0]
+
+        logits = tf.matmul(
+            hidden_states, self.transformer.wte.weights,transpose_b = True
+        )
+
+        loss = None
+        if labels is not None:
+            # label is the exact inputs, so we should ignore the last token
+            # of the logits, and first token of the inputs
+            shifted_logits = logits[:, :-1] 
+            labels = labels[:, 1:]
+            loss = self.hf_compute_loss(labels, shifted_logits)
+
+
+
+if __name__ == '__main__':
+    config = GPT2Config()
+    m = TFGPT2LMHeadModel(config=config)        
