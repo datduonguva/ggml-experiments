@@ -8,12 +8,15 @@ def stable_softmax(logits, axis=None, name=None):
 class GPT2Config:
     n_head = 4
     n_layers = 4
-    n_embedding = 512
-    hidden_size = 512  # Same with n_embedding ? need verify
-    n_positions = None
+    n_inner = None # this should not change
+    n_embd = 128
+    vocab_size = 50257
+    hidden_size = 128  # Same with n_embedding ? need verify
+    n_positions = 512
     layer_norm_epsilon = 1e-5
     # Todo: adding this
     output_attentions = False
+    output_hidden_states = False
 
     resid_pdrop = 0.1
     embd_pdrop = 0.1
@@ -88,7 +91,7 @@ class TFAttention(tf.keras.layers.Layer):
 
         self.c_proj = TFConv1D(
             nf=self.n_state,
-            nx=self.nx,
+            nx=nx,
             initializer_range=config.initializer_range,
             name="c_proj"
         )
@@ -228,11 +231,120 @@ class TFAttention(tf.keras.layers.Layer):
         return outputs # (a, present) + attentions
 
 
+class TFMLP(tf.keras.layers.Layer):
+    def __init__(self, n_state, config, **kwargs):
+        super().__init__(**kwargs)
+        nx = config.n_embd
+        self.c_fc = TFConv1D(
+            n_state, nx, initializer_range=config.initializer_range, name="c_fc"
+        )
+        self.c_proj = TFConv1D(
+            nx, n_state, initializer_range=config.initializer_range, name="c_proj"
+        )
+        self.act = tf.keras.activations.relu
+        self.dropout = tf.keras.layers.Dropout(config.resid_pdrop)
+        self.intermediate_size = n_state
+        self.embed_dim = nx
+
+    def call(self, x, training=False):
+        h = self.act(self.c_fc(x))
+        h2 = self.c_proj(h)
+        h2 = self.dropout(h2, training=training)
+        return h2
+
+    def build(self, input_shape=None):
+        if self.built:
+            return
+        self.built = True
+        if getattr(self, "c_fc", None) is not None:
+            with tf.name_scope(self.c_fc.name):
+                self.c_fc.build([None, None, self.intermediate_size])
+        if getattr(self, "c_proj", None) is not None:
+            with tf.name_scope(self.c_proj.name):
+                self.c_proj.build([None, None, self.embed_dim])
+
+
+
+class TFBlock(tf.keras.layers.Layer):
+    def __init__(self, config, scale=False, **kwargs):
+        super().__init__(**kwargs)
+
+        nx = config.n_embd
+        inner_dim = config.n_inner if config.n_inner is not None else 4 * nx
+        self.ln_1 = tf.keras.layers.LayerNormalization(
+            epsilon=config.layer_norm_epsilon, name='ln_1'
+        )
+        self.attn = TFAttention(nx, config, scale, name='attn')
+        self.ln_2 = tf.keras.layers.LayerNormalization(
+            epsilon=config.layer_norm_epsilon, name='ln_2'
+        )
+
+        self.mlp = TFMLP(inner_dim, config, name='mlp')
+        self.hidden_size = config.hidden_size
+
+
+    def call(
+        self, 
+        x,
+        layer_past,
+        attention_mask,
+        head_mask,
+        encoder_hidden_states,
+        encoder_attention_mask,
+        use_cache=False,
+        output_attentions=False,
+        training=False
+    ):
+        a = self.ln_1(x)
+        output_attn = self.attn(
+            a,
+            layer_past=layer_past,
+            attention_mask=attention_mask,
+            head_mask=head_mask,
+            encoder_hidden_states=None,
+            encoder_attention_mask=None,
+            use_cache=use_cache,
+            output_attentions=output_attentions,
+            training=training
+        )
+
+        a = output_attn[0] 
+        outputs = outputs[1:]
+        x = x + a
+        m = self.ln_2(x)
+        m = self.mlp(m, training=training)
+        x = x + m
+
+        return [x] + outputs
+
+    def build(self, input_shape=None):
+        if self.built:
+            return
+        self.built = True
+        if getattr(self, "ln_1", None) is not None:
+            with tf.name_scope(self.ln_1.name):
+                self.ln_1.build([None, None, self.hidden_size])
+        if getattr(self, "attn", None) is not None:
+            with tf.name_scope(self.attn.name):
+                self.attn.build(None)
+        if getattr(self, "ln_2", None) is not None:
+            with tf.name_scope(self.ln_2.name):
+                self.ln_2.build([None, None, self.hidden_size])
+        if getattr(self, "mlp", None) is not None:
+            with tf.name_scope(self.mlp.name):
+                self.mlp.build(None)
+        if getattr(self, "crossattention", None) is not None:
+            with tf.name_scope(self.crossattention.name):
+                self.crossattention.build(None)
+        if getattr(self, "ln_cross_attn", None) is not None:
+            with tf.name_scope(self.ln_cross_attn.name):
+                self.ln_cross_attn.build([None, None, self.hidden_size])
 
 
 class TFGPT2(tf.keras.models.Model):
-    def __int__(self, config, *inputs, **kwargs):
+    def __init__(self, config, *inputs, **kwargs):
         super().__init__(*inputs, **kwargs)
+        print("TFGPT2 initiated")
 
         self.config = config
         self.output_attentions = config.output_attentions
@@ -244,7 +356,7 @@ class TFGPT2(tf.keras.models.Model):
         self.initializer_range = config.initializer_range
 
         # word token embedding
-        self.wpe = tf.keras.layers.Embedding(
+        self.wte = tf.keras.layers.Embedding(
             input_dim=config.vocab_size,
             output_dim=config.hidden_size,
             embeddings_initializer=tf.keras.initializers.TruncatedNormal(
@@ -263,7 +375,7 @@ class TFGPT2(tf.keras.models.Model):
             name="wpe",
         )
 
-        self.drop = tf.keras.layers.Drop(config.embd_drop)
+        self.drop = tf.keras.layers.Dropout(config.embd_pdrop)
         self.h = [
             TFBlock(config, scale=True, name=f"h_._{i}")
             for i in range(config.n_layers)
@@ -378,7 +490,7 @@ class TFGPT2(tf.keras.models.Model):
 
         if getattr(self, "ln_f", None) is not None:
             with tf.name_scope(self.ln_f.name):
-                self.ln_f.build([None, None, self.embedding_size])
+                self.ln_f.build([None, None, self.n_embd])
         if getattr(self, "h", None) is not None:
             for layer in self.h:
                 with tf.name_scope(layer.name):
@@ -386,6 +498,7 @@ class TFGPT2(tf.keras.models.Model):
 
 class TFGPT2LMHeadModel(tf.keras.models.Model):
     def __init__(self, config, *inputs, **kwargs):
+        print("TFGPT2LMHeadModel initiated")
         super().__init__(config, *inputs, **kwargs)
         self.transformer = TFGPT2(config, name="transformer")
         
@@ -445,8 +558,21 @@ class TFGPT2LMHeadModel(tf.keras.models.Model):
             labels = labels[:, 1:]
             loss = self.hf_compute_loss(labels, shifted_logits)
 
+    def build(self, input_shape=None):
+        print("TFGPT2LMHeadModel input: ", input_shape)
+        if self.built:
+            return True
 
+        self.built = True
+
+        if getattr(self, "transformer", None) is not None:
+            with tf.name_scope(self.transformer.name):
+                self.transformer.build(None)
+
+            
 
 if __name__ == '__main__':
     config = GPT2Config()
-    m = TFGPT2LMHeadModel(config=config)        
+    m = TFGPT2LMHeadModel(config, name="transformer")
+    m.build()
+    m.summary()
