@@ -11,7 +11,7 @@ class GPT2Config:
     n_inner = None # this should not change
     n_embd = 128
     vocab_size = 50257
-    hidden_size = 128  # Same with n_embedding ? need verify
+    n_embd = 128  # Same with n_embedding ? need verify
     n_positions = 512
     layer_norm_epsilon = 1e-5
     # Todo: adding this
@@ -280,7 +280,7 @@ class TFBlock(tf.keras.layers.Layer):
         )
 
         self.mlp = TFMLP(inner_dim, config, name='mlp')
-        self.hidden_size = config.hidden_size
+        self.n_embd = config.n_embd
 
 
     def call(
@@ -323,13 +323,13 @@ class TFBlock(tf.keras.layers.Layer):
         self.built = True
         if getattr(self, "ln_1", None) is not None:
             with tf.name_scope(self.ln_1.name):
-                self.ln_1.build([None, None, self.hidden_size])
+                self.ln_1.build([None, None, self.n_embd])
         if getattr(self, "attn", None) is not None:
             with tf.name_scope(self.attn.name):
                 self.attn.build(None)
         if getattr(self, "ln_2", None) is not None:
             with tf.name_scope(self.ln_2.name):
-                self.ln_2.build([None, None, self.hidden_size])
+                self.ln_2.build([None, None, self.n_embd])
         if getattr(self, "mlp", None) is not None:
             with tf.name_scope(self.mlp.name):
                 self.mlp.build(None)
@@ -338,7 +338,7 @@ class TFBlock(tf.keras.layers.Layer):
                 self.crossattention.build(None)
         if getattr(self, "ln_cross_attn", None) is not None:
             with tf.name_scope(self.ln_cross_attn.name):
-                self.ln_cross_attn.build([None, None, self.hidden_size])
+                self.ln_cross_attn.build([None, None, self.n_embd])
 
 
 class TFGPT2(tf.keras.models.Model):
@@ -358,7 +358,7 @@ class TFGPT2(tf.keras.models.Model):
         # word token embedding
         self.wte = tf.keras.layers.Embedding(
             input_dim=config.vocab_size,
-            output_dim=config.hidden_size,
+            output_dim=config.n_embd,
             embeddings_initializer=tf.keras.initializers.TruncatedNormal(
                 config.initializer_range
             ),
@@ -384,7 +384,7 @@ class TFGPT2(tf.keras.models.Model):
         self.ln_f = tf.keras.layers.LayerNormalization(
             epsilon=config.layer_norm_epsilon, name="ln_f"
         )
-        self.embed_dim = config.hidden_size
+        self.embed_dim = config.n_embd
 
     def call(self, 
         input_ids,
@@ -439,8 +439,8 @@ class TFGPT2(tf.keras.models.Model):
         )
 
 
-        inputs_embeds = self.wte(input_ids) # (batch, length, hidden_size)
-        position_embeds = self.wpe(input_ids) # (batch, length, hidden_size)
+        inputs_embeds = self.wte(input_ids) # (batch, length, n_embd)
+        position_embeds = self.wpe(input_ids) # (batch, length, n_embd)
         token_type_embeds = tf.constant(0.0, dtype=inputs_embeds.dtype)
 
         position_embeds = tf.cast(position_embeds, dtype=inputs_embeds.dtype)
@@ -496,9 +496,9 @@ class TFGPT2(tf.keras.models.Model):
                 with tf.name_scope(layer.name):
                     layer.build(None)
 
+
 class TFGPT2LMHeadModel(tf.keras.models.Model):
     def __init__(self, config, *inputs, **kwargs):
-        print("TFGPT2LMHeadModel initiated")
         super().__init__(config, *inputs, **kwargs)
         self.transformer = TFGPT2(config, name="transformer")
         
@@ -559,7 +559,6 @@ class TFGPT2LMHeadModel(tf.keras.models.Model):
             loss = self.hf_compute_loss(labels, shifted_logits)
 
     def build(self, input_shape=None):
-        print("TFGPT2LMHeadModel input: ", input_shape)
         if self.built:
             return True
 
