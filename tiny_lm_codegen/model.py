@@ -45,6 +45,7 @@ class TFConv1D(tf.keras.layers.Layer):
     def build(self, input_shape):
         if self.built:
             return
+
         self.built = True
         self.weight = self.add_weight(
             "weight",
@@ -57,15 +58,22 @@ class TFConv1D(tf.keras.layers.Layer):
             "bias", shape=[1, self.nf], initializer=tf.zeros_initializer()
         )
 
-        def call(self, x):
-            bz, sl = tf.shape(x)[:2]
+    def call(self, x):
+        print("I am hereeeeeeeeeee")
+        bz, sl = tf.shape(x)[:2]
 
-            x = tf.reshape(x, [-1, self.nx])
-            x = tf.matmul(x, self.weight) + self.bias
+        print("----")
+        x = tf.reshape(x, [-1, self.nx])
+        print("before: ", tf.shape(x))
+        print("weight: ", tf.shape(self.weight))
+        x = tf.matmul(x, self.weight) + self.bias
+        print("after: ", tf.shape(x))
 
-            x = tf.reshape(x, [bz, sl, self.nf])
+        x = tf.reshape(x, [bz, sl, self.nf])
+        print("reshape: ", tf.shape(x))
+        print("----")
 
-            return x
+        return x
 
 
 class TFAttention(tf.keras.layers.Layer):
@@ -107,7 +115,7 @@ class TFAttention(tf.keras.layers.Layer):
         """
         if self.built:
             return
-        self.build = True
+        self.built = True
 
         c_attn_shape = 3 * self.embed_dim
 
@@ -125,7 +133,7 @@ class TFAttention(tf.keras.layers.Layer):
         x_shape = tf.shape(x) 
         x = tf.reshape(
             x,
-            [x_shape[0], x_shape[1], self.n_head, x_shape[-1]/self.n_head]
+            [x_shape[0], x_shape[1], self.n_head, tf.cast(x_shape[-1]/self.n_head, tf.int32)],
         )   # (batch, length, n_head, head_size)
 
         x = tf.transpose(x, (0, 2, 1, 3)) # (batch, n_head, length, head_size)
@@ -154,7 +162,7 @@ class TFAttention(tf.keras.layers.Layer):
         if head_mask is not None:
             w = w*head_mask
 
-        output = [tf.matmul(w, v)]
+        outputs = [tf.matmul(w, v)]
 
         if output_attentions:
             outputs.append(w)
@@ -194,7 +202,9 @@ class TFAttention(tf.keras.layers.Layer):
         x.shape = (batch, length, embedding_size)
         """
         # not using cross attention here
+        print(x.shape)
         x = self.c_attn(x)
+        print(x.shape)
         query, key, value = tf.split(x, 3, axis=2)
 
 
@@ -215,7 +225,8 @@ class TFAttention(tf.keras.layers.Layer):
 
         attn_outputs = self._attn(
             query, key, value, 
-            attention, head_mask, 
+            attention_mask, head_mask, 
+            output_attentions=False,
             training=training 
         )
 
@@ -296,20 +307,20 @@ class TFBlock(tf.keras.layers.Layer):
         training=False
     ):
         a = self.ln_1(x)
+
+        print("shape of a: ", tf.shape(a))
         output_attn = self.attn(
             a,
             layer_past=layer_past,
             attention_mask=attention_mask,
             head_mask=head_mask,
-            encoder_hidden_states=None,
-            encoder_attention_mask=None,
             use_cache=use_cache,
-            output_attentions=output_attentions,
             training=training
         )
 
+
         a = output_attn[0] 
-        outputs = outputs[1:]
+        outputs = output_attn[1:]
         x = x + a
         m = self.ln_2(x)
         m = self.mlp(m, training=training)
@@ -426,11 +437,11 @@ class TFGPT2(tf.keras.models.Model):
                 attention_mask,
                 [shape[0], 1, 1, shape[1]]
             )
-            one_cst = tf.constant(1.0)
+            one_cst = tf.constant(1.0, dtype=tf.float32)
             attention_mask = tf.cast(attention_mask, dtype=one_cst.dtype)
-            attention_mask = tf.multily(
+            attention_mask = tf.multiply(
                 tf.subtract(one_cst, attention_mask),
-                tf.constant(-10000)
+                tf.constant(-10000.0)
             )
 
         position_ids = tf.reshape(
@@ -451,8 +462,9 @@ class TFGPT2(tf.keras.models.Model):
         output_shape = input_shape + [tf.shape(hidden_states)[-1]]
 
         for i, (block, layer_past) in enumerate(zip(self.h, past_key_values)):
+
             outputs = block(
-                hidden_states=hidden_states,
+                x=hidden_states,
                 layer_past=layer_past,
                 attention_mask=attention_mask,
                 head_mask=head_mask[i],
@@ -522,11 +534,12 @@ class TFGPT2LMHeadModel(tf.keras.models.Model):
     def call(
         self,
         input_ids,
-        past_key_values,
-        attention_mask,
-        token_type_ids,
-        position_ids,
-        use_cache,
+        past_key_values=None,
+        attention_mask=None,
+        token_type_ids=None,
+        position_ids=None,
+        head_mask=None,
+        use_cache=None,
         labels=None,
         training=False
     ):
@@ -536,7 +549,7 @@ class TFGPT2LMHeadModel(tf.keras.models.Model):
             attention_mask=attention_mask,
             token_type_ids=token_type_ids,
             position_ids=position_ids,
-            head_mask=None,
+            head_mask=head_mask,
             use_cache=False,
             output_attentions=False,
             output_hidden_states=False,
@@ -557,6 +570,9 @@ class TFGPT2LMHeadModel(tf.keras.models.Model):
             shifted_logits = logits[:, :-1] 
             labels = labels[:, 1:]
             loss = self.hf_compute_loss(labels, shifted_logits)
+            return loss
+
+        return logits
 
     def build(self, input_shape=None):
         if self.built:
@@ -572,6 +588,22 @@ class TFGPT2LMHeadModel(tf.keras.models.Model):
 
 if __name__ == '__main__':
     config = GPT2Config()
+
+
     m = TFGPT2LMHeadModel(config, name="transformer")
     m.build()
+
     m.summary()
+
+    input_ids = [[1, 2, 3, 4, 5, 6]]
+    print(m(
+        input_ids=input_ids,
+        past_key_values=None,
+        attention_mask=tf.constant([[1.0, 1, 1, 1, 0, 0]], dtype=tf.float32),
+        head_mask=[None]*config.n_layers,
+        token_type_ids=None,
+        position_ids=None,
+        use_cache=False,
+        )
+   )
+
