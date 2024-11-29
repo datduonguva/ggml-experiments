@@ -1,4 +1,5 @@
 import tensorflow as tf
+from time import time
 
 
 def stable_softmax(logits, axis=None, name=None):
@@ -11,7 +12,6 @@ class GPT2Config:
     n_inner = None # this should not change
     n_embd = 128
     vocab_size = 50257
-    n_embd = 128  # Same with n_embedding ? need verify
     n_positions = 512
     layer_norm_epsilon = 1e-5
     # Todo: adding this
@@ -59,19 +59,12 @@ class TFConv1D(tf.keras.layers.Layer):
         )
 
     def call(self, x):
-        print("I am hereeeeeeeeeee")
         bz, sl = tf.shape(x)[:2]
 
-        print("----")
         x = tf.reshape(x, [-1, self.nx])
-        print("before: ", tf.shape(x))
-        print("weight: ", tf.shape(self.weight))
         x = tf.matmul(x, self.weight) + self.bias
-        print("after: ", tf.shape(x))
 
         x = tf.reshape(x, [bz, sl, self.nf])
-        print("reshape: ", tf.shape(x))
-        print("----")
 
         return x
 
@@ -202,9 +195,7 @@ class TFAttention(tf.keras.layers.Layer):
         x.shape = (batch, length, embedding_size)
         """
         # not using cross attention here
-        print(x.shape)
         x = self.c_attn(x)
-        print(x.shape)
         query, key, value = tf.split(x, 3, axis=2)
 
 
@@ -308,7 +299,6 @@ class TFBlock(tf.keras.layers.Layer):
     ):
         a = self.ln_1(x)
 
-        print("shape of a: ", tf.shape(a))
         output_attn = self.attn(
             a,
             layer_past=layer_past,
@@ -410,7 +400,9 @@ class TFGPT2(tf.keras.models.Model):
         return_dict=True,
         training=False
     ):
-        input_shape = tf.shape(input_ids)
+        input_shape = list(tf.shape(input_ids))
+
+        # what does this do? change a 1d to a 2d if needed
         input_ids = tf.reshape(
             input_ids,
             [-1, input_shape[-1]]
@@ -431,6 +423,7 @@ class TFGPT2(tf.keras.models.Model):
                 axis=0
             )
 
+        # TODO: read this part to understand how attention mask is used
         if attention_mask is not None:
             shape = tf.shape(attention_mask)
             attention_mask = tf.reshape(
@@ -595,15 +588,20 @@ if __name__ == '__main__':
 
     m.summary()
 
-    input_ids = [[1, 2, 3, 4, 5, 6]]
-    print(m(
-        input_ids=input_ids,
-        past_key_values=None,
-        attention_mask=tf.constant([[1.0, 1, 1, 1, 0, 0]], dtype=tf.float32),
-        head_mask=[None]*config.n_layers,
-        token_type_ids=None,
-        position_ids=None,
-        use_cache=False,
+    input_ids = [[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]]
+    t0 = time()
+    for i in range(100):
+        print(i)
+        a = m(
+            input_ids=input_ids,
+            past_key_values=None,
+            attention_mask=tf.constant([[1.0, 1, 1, 1, 0, 0, 1, 1, 1, 1]], dtype=tf.float32),
+            head_mask=[None]*config.n_layers,
+            token_type_ids=None,
+            position_ids=None,
+            use_cache=False,
+            training=False
         )
-   )
+    print("time: ", 1000*(time() - t0)/100)
+
 
