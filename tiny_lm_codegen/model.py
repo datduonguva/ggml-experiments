@@ -134,6 +134,16 @@ class TFAttention(tf.keras.layers.Layer):
         return x
 
 
+    def causal_attention_mask(nd, ns, dtype):
+        """
+        This function creates an attension mask using diagnonal mask.
+        """
+
+        i = tf.range(nd)[:,None]
+        j = tf.range(ns)
+        m = (i >= j - ns + nd)
+        return tf.cast(m, tf.float32)
+    
     def _attn(
         self, q, k, v, attention_mask, head_mask, output_attentions,
         training=False
@@ -143,6 +153,17 @@ class TFAttention(tf.keras.layers.Layer):
         if self.scale:
             dk = tf.cast(tf.shape(k)[-1], dtype=w.dtype)
             w = w / tf.math.sqrt(dk)
+
+        # we always add causal attention mask
+        # w has shape: batch, head, dst_seq, src_seq
+        # v has shape: batch, 
+        if True:
+            _, _, nd, ns = list(tf.shape(w)) # nd: n_destination, ns: n_source
+            b = self.causal_attention_mask(nd, ns, dtype=w.dtype)
+            b = tf.reshape(b, [1, 1, nd, ns]) # b is matrix of 0, 1
+            # this means that the attention weights for token i from tokens
+            # i + k are -1e4. After softmax, it will become 0.
+            w = w * b  - 1e4* (1  -b) 
 
         # not using cross attention
         if attention_mask is not None:
